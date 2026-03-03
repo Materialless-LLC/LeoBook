@@ -273,6 +273,7 @@ EXTRACT_MATCHES_JS = r"""(ctx) => {
             away_crest_url: awayCrest,
             league_stage: currentRound,
             extra: extraTag || null,
+            match_link: mLink ? (mLink.startsWith('http') ? mLink : 'https://www.flashscore.com' + mLink) : '',
             url: `/match/${fixtureId}/#/match-summary`
         });
     });
@@ -618,7 +619,8 @@ async def extract_tab(page: Page, league_url: str, tab: str, conn,
             "season": season,
             "home_crest": home_crest_path,
             "away_crest": away_crest_path,
-            "url": f"https://www.flashscore.com/match/{m.get('fixture_id', '')}/#/match-summary",
+            "url": m.get("match_link") or f"https://www.flashscore.com/match/{m.get('fixture_id', '')}/#/match-summary",
+            "match_link": m.get("match_link") or f"https://www.flashscore.com/match/{m.get('fixture_id', '')}/#/match-summary",
         })
 
     # Bulk insert fixtures
