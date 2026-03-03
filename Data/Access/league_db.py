@@ -138,23 +138,8 @@ _SCHEMA_SQL = """
         last_updated        TEXT DEFAULT (datetime('now'))
     );
 
-    CREATE TABLE IF NOT EXISTS standings (
-        standings_key       TEXT PRIMARY KEY,
-        league_id           TEXT,
-        team_id             TEXT,
-        team_name           TEXT,
-        position            INTEGER,
-        played              INTEGER,
-        wins                INTEGER,
-        draws               INTEGER,
-        losses              INTEGER,
-        goals_for           INTEGER,
-        goals_against       INTEGER,
-        goal_difference     INTEGER,
-        points              INTEGER,
-        region_league       TEXT,
-        last_updated        TEXT DEFAULT (datetime('now'))
-    );
+    -- standings: REMOVED in v7.0 — computed on-the-fly from fixtures table.
+    -- See computed_standings() function and Supabase computed_standings VIEW.
 
     CREATE TABLE IF NOT EXISTS audit_log (
         id                  TEXT PRIMARY KEY,
@@ -265,7 +250,6 @@ _SCHEMA_SQL = """
     CREATE INDEX IF NOT EXISTS idx_leagues_league_id ON leagues(league_id);
     CREATE INDEX IF NOT EXISTS idx_predictions_date ON predictions(date);
     CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status);
-    CREATE INDEX IF NOT EXISTS idx_standings_league ON standings(league_id);
 """
 
 # Columns that need to be added to existing tables that were created
@@ -313,7 +297,6 @@ _CSV_TABLE_MAP = {
     "predictions.csv": ("predictions", "fixture_id", {
         "over_2.5": "over_2_5",
     }),
-    "standings.csv": ("standings", "standings_key", {}),
     "audit_log.csv": ("audit_log", "id", {}),
     "fb_matches.csv": ("fb_matches", "site_match_id", {}),
     "live_scores.csv": ("live_scores", "fixture_id", {}),
@@ -323,6 +306,92 @@ _CSV_TABLE_MAP = {
     "custom_rules.csv": ("custom_rules", "id", {}),
     "rule_executions.csv": ("rule_executions", "id", {}),
 }
+
+
+# ── Computed Standings (v7.0 — replaces the old standings table) ────────────
+_COMPUTED_STANDINGS_SQL = """
+    WITH match_results AS (
+        SELECT
+            league_id,
+            home_team_id AS team_id,
+            home_team_name AS team_name,
+            season,
+            CASE WHEN home_score > away_score THEN 3 WHEN home_score = away_score THEN 1 ELSE 0 END AS points,
+            CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS wins,
+            CASE WHEN home_score = away_score THEN 1 ELSE 0 END AS draws,
+            CASE WHEN home_score < away_score THEN 1 ELSE 0 END AS losses,
+            home_score AS goals_for,
+            away_score AS goals_against
+        FROM fixtures
+        WHERE match_status = 'finished'
+          AND home_score IS NOT NULL AND away_score IS NOT NULL
+          AND TYPEOF(home_score) != 'text' OR CAST(home_score AS INTEGER) = home_score
+
+        UNION ALL
+
+        SELECT
+            league_id,
+            away_team_id AS team_id,
+            away_team_name AS team_name,
+            season,
+            CASE WHEN away_score > home_score THEN 3 WHEN away_score = home_score THEN 1 ELSE 0 END,
+            CASE WHEN away_score > home_score THEN 1 ELSE 0 END,
+            CASE WHEN away_score = home_score THEN 1 ELSE 0 END,
+            CASE WHEN away_score < home_score THEN 1 ELSE 0 END,
+            away_score,
+            home_score
+        FROM fixtures
+        WHERE match_status = 'finished'
+          AND home_score IS NOT NULL AND away_score IS NOT NULL
+          AND TYPEOF(home_score) != 'text' OR CAST(home_score AS INTEGER) = home_score
+    )
+    SELECT
+        league_id, team_id, team_name, season,
+        COUNT(*) AS played,
+        SUM(wins) AS wins,
+        SUM(draws) AS draws,
+        SUM(losses) AS losses,
+        SUM(goals_for) AS goals_for,
+        SUM(goals_against) AS goals_against,
+        SUM(goals_for) - SUM(goals_against) AS goal_difference,
+        SUM(points) AS points
+    FROM match_results
+    WHERE 1=1 {filters}
+    GROUP BY league_id, team_id, team_name, season
+    ORDER BY league_id, season, points DESC, goal_difference DESC, goals_for DESC
+"""
+
+
+def computed_standings(conn=None, league_id=None, season=None):
+    """Compute league standings on-the-fly from the fixtures table.
+
+    Always up-to-date, even during live matches (if scores are propagated).
+    Replaces the old standings table (removed in v7.0).
+
+    Args:
+        conn: SQLite connection (optional, uses default)
+        league_id: Filter by league_id (optional)
+        season: Filter by season (optional)
+
+    Returns:
+        List of dicts with: league_id, team_id, team_name, season,
+        played, wins, draws, losses, goals_for, goals_against,
+        goal_difference, points
+    """
+    conn = conn or init_db()
+    filters = ""
+    params = []
+    if league_id:
+        filters += " AND league_id = ?"
+        params.append(league_id)
+    if season:
+        filters += " AND season = ?"
+        params.append(season)
+
+    sql = _COMPUTED_STANDINGS_SQL.format(filters=filters)
+    cursor = conn.execute(sql, params)
+    columns = [d[0] for d in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
 def _run_alter_migrations(conn: sqlite3.Connection):

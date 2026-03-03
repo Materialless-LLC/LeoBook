@@ -30,7 +30,6 @@ TABLE_CONFIG = {
     'schedules':        {'local_table': 'fixtures',         'remote_table': 'schedules',        'key': 'fixture_id'},
     'teams':            {'local_table': 'teams',            'remote_table': 'teams',            'key': 'team_id'},
     'region_league':    {'local_table': 'leagues',          'remote_table': 'region_league',    'key': 'league_id'},
-    'standings':        {'local_table': 'standings',        'remote_table': 'standings',        'key': 'standings_key'},
     'fb_matches':       {'local_table': 'fb_matches',       'remote_table': 'fb_matches',       'key': 'site_match_id'},
     'profiles':         {'local_table': 'profiles',         'remote_table': 'profiles',         'key': 'id'},
     'custom_rules':     {'local_table': 'custom_rules',     'remote_table': 'custom_rules',     'key': 'id'},
@@ -91,15 +90,6 @@ SUPABASE_SCHEMA = {
             league_url TEXT, region TEXT, region_flag TEXT, region_url TEXT,
             other_names TEXT, abbreviations TEXT, search_terms TEXT,
             date_updated TEXT,
-            last_updated TIMESTAMPTZ DEFAULT now()
-        );""",
-    'standings': """
-        CREATE TABLE IF NOT EXISTS public.standings (
-            standings_key TEXT PRIMARY KEY,
-            league_id TEXT, team_id TEXT, team_name TEXT,
-            position INTEGER, played INTEGER, wins INTEGER, draws INTEGER,
-            losses INTEGER, goals_for INTEGER, goals_against INTEGER,
-            goal_difference INTEGER, points INTEGER, region_league TEXT,
             last_updated TIMESTAMPTZ DEFAULT now()
         );""",
     'audit_log': """

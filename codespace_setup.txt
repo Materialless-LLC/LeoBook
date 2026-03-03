@@ -1,8 +1,11 @@
 pip install -r requirements.txt
-python -m playwright install
-sudo rm /etc/apt/sources.list.d/yarn.list
+pip install -r requirements-rl.txt
 python -m playwright install-deps
+python -m playwright install
+#sudo rm /etc/apt/sources.list.d/yarn.list
 
+# Codespace setup (runs automatically on container creation for rl_training)
+bash .devcontainer/setup.sh
 
 # GitHub Codespaces - File Copy, Move, Zip & Unzip Commands
 # For leobook.db + crests folder

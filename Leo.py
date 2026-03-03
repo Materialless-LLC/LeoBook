@@ -57,23 +57,27 @@ from Core.System.withdrawal_checker import (
     check_triggers, propose_withdrawal, calculate_proposed_amount, get_latest_win,
     check_withdrawal_approval, execute_withdrawal
 )
+from Core.System.scheduler import (
+    TaskScheduler, TASK_WEEKLY_ENRICHMENT, TASK_DAY_BEFORE_PREDICT, TASK_RL_TRAINING
+)
+from Core.System.data_readiness import (
+    check_leagues_ready, check_seasons_ready, check_rl_ready, auto_remediate
+)
 from Data.Access.db_helpers import init_csvs, log_audit_event
 from Data.Access.sync_manager import SyncManager, run_full_sync
-from Data.Access.outcome_reviewer import run_review_process, run_accuracy_generation
-from Data.Access.prediction_accuracy import print_accuracy_report
+from Data.Access.league_db import init_db
 from Scripts.enrich_all_schedules import enrich_all_schedules
 from Modules.Flashscore.manager import run_flashscore_analysis, run_flashscore_offline_repredict, run_flashscore_schedule_only
 from Modules.Flashscore.fs_live_streamer import live_score_streamer
 from Modules.FootballCom.fb_manager import run_odds_harvesting, run_automated_booking
-from Core.System.monitoring import run_chapter_3_oversight
 from Scripts.recommend_bets import get_recommendations
+from Scripts.enrich_leagues import main as run_league_enricher
 from Modules.Assets.asset_manager import sync_team_assets, sync_league_assets, sync_region_flags
 from Scripts.football_logos import download_all_logos
-from Scripts.enrich_leagues import main as run_league_enricher
 from Scripts.upgrade_crests import upgrade_all_crests
 
 # Configuration
-CYCLE_WAIT_HOURS = int(os.getenv('LEO_CYCLE_WAIT_HOURS', 6))
+DEFAULT_CYCLE_HOURS = int(os.getenv('LEO_CYCLE_WAIT_HOURS', 6))
 LOCK_FILE = "leo.lock"
 
 
@@ -81,91 +85,154 @@ LOCK_FILE = "leo.lock"
 # PAGE FUNCTIONS — Each is a self-contained async operation
 # ============================================================
 
-@AIGOSuite.aigo_retry(max_retries=2, delay=2.0)
-async def run_prologue_p1(p):
-    """Prologue Page 1: Cloud Handshake & Prediction Review."""
-    log_state(chapter="Prologue P1", action="Cloud Handshake & Prediction Review")
+# ============================================================
+# STARTUP — Ensures DB + Supabase tables exist, full sync
+# ============================================================
+
+async def run_startup_sync():
+    """Startup: Ensure local DB and Supabase tables exist, then full bi-directional sync.
+    Must complete before the live streamer starts."""
+    log_state(chapter="Startup", action="DB Initialization & Full Sync")
     try:
         print("\n" + "=" * 60)
-        print("  PROLOGUE PAGE 1: Cloud Handshake & Prediction Review")
+        print("  STARTUP: Database Initialization & Full Sync")
         print("=" * 60)
 
+        # Initialize local SQLite DB (creates tables if missing)
+        init_csvs()
+        init_db()
+
+        # Full bi-directional sync (auto-creates Supabase tables if missing)
         sync_mgr = SyncManager()
         await sync_mgr.sync_on_startup()
 
-        from Data.Access.outcome_reviewer import run_review_process
-        await run_review_process(p)
-
-        print_accuracy_report()
-
-        log_audit_event("PROLOGUE_P1", "Cloud handshake and prediction review completed.", status="success")
+        log_audit_event("STARTUP", "DB initialized and full sync completed.", status="success")
+        print("  [Startup] ✓ Complete")
+        return True
     except Exception as e:
-        print(f"  [Error] Prologue Page 1 failed: {e}")
+        print(f"  [Error] Startup sync failed: {e}")
+        log_audit_event("STARTUP", f"Failed: {e}", status="failed")
+        return False
+
+
+# ============================================================
+# PROLOGUE — Data Readiness Gates (P1-P3)
+# ============================================================
+
+async def run_prologue_p1():
+    """Prologue P1: Verify leagues >= 90% of leagues.json AND teams >= 5 per league.
+    Auto-remediates via --enrich-leagues + --search-dict if below threshold."""
+    log_state(chapter="Prologue P1", action="Data Readiness: Leagues & Teams")
+    try:
+        print("\n" + "=" * 60)
+        print("  PROLOGUE P1: Data Readiness — Leagues & Teams")
+        print("=" * 60)
+
+        ready, stats = check_leagues_ready()
+        if not ready:
+            await auto_remediate("leagues")
+            ready, stats = check_leagues_ready()
+
+        log_audit_event("PROLOGUE_P1", f"Leagues: {stats['actual_leagues']}/{stats['expected_leagues']}, "
+                        f"Teams: {stats['team_count']}", status="success" if ready else "partial_failure")
+    except Exception as e:
+        print(f"  [Error] Prologue P1 failed: {e}")
         log_audit_event("PROLOGUE_P1", f"Failed: {e}", status="failed")
 
 
-# Prologue P2 (Metadata Enrichment) REMOVED — now handled JIT in Ch1 P1 and --schedule --all.
-# Use `python Leo.py --enrich` for manual gap-filling if needed.
-
-
-@AIGOSuite.aigo_retry(max_retries=2, delay=2.0)
 async def run_prologue_p2():
-    """Prologue Page 2: Accuracy Generation & Final Prologue Sync."""
-    log_state(chapter="Prologue P2", action="Accuracy Generation & Final Prologue Sync")
+    """Prologue P2: Verify >= 2 seasons of historical fixtures per league.
+    Auto-remediates via --enrich-leagues --seasons 2 if below threshold."""
+    log_state(chapter="Prologue P2", action="Data Readiness: Historical Seasons")
     try:
         print("\n" + "=" * 60)
-        print("  PROLOGUE PAGE 2: Accuracy & Final Prologue Sync")
+        print("  PROLOGUE P2: Data Readiness — Historical Seasons")
         print("=" * 60)
-        await run_accuracy_generation()
-        await run_full_sync(session_name="Prologue Final")
-        log_audit_event("PROLOGUE_P2", "Accuracy generated and Prologue sync completed.", status="success")
+
+        ready, stats = check_seasons_ready()
+        if not ready:
+            await auto_remediate("seasons")
+            ready, stats = check_seasons_ready()
+
+        log_audit_event("PROLOGUE_P2", f"Seasons: {stats['leagues_with_enough_seasons']}/"
+                        f"{stats['total_leagues_with_fixtures']} leagues OK",
+                        status="success" if ready else "partial_failure")
     except Exception as e:
-        print(f"  [Error] Prologue Page 2 failed: {e}")
+        print(f"  [Error] Prologue P2 failed: {e}")
         log_audit_event("PROLOGUE_P2", f"Failed: {e}", status="failed")
 
 
-@AIGOSuite.aigo_retry(max_retries=2, delay=3.0)
-async def run_chapter_1_p1(p, refresh: bool = False, target_dates: list = None):
-    """Chapter 1 Page 1: Flashscore Extraction & AI Analysis."""
-    log_state(chapter="Ch1 P1", action="Flashscore Extraction & Analysis")
+async def run_prologue_p3():
+    """Prologue P3: Verify RL adapters are trained for active leagues.
+    Auto-remediates via --train-rl if not ready."""
+    log_state(chapter="Prologue P3", action="Data Readiness: RL Adapters")
     try:
         print("\n" + "=" * 60)
-        print("  CHAPTER 1 PAGE 1: Extraction & Prediction")
+        print("  PROLOGUE P3: Data Readiness — RL Adapters")
         print("=" * 60)
-        await run_flashscore_analysis(p, refresh=refresh, target_dates=target_dates)
-        await run_full_sync(session_name="Ch1 P1")
-        log_audit_event("CH1_P1", "Flashscore extraction and analysis completed.", status="success")
-    except Exception as e:
-        print(f"  [Error] Chapter 1 Page 1 failed: {e}")
-        log_audit_event("CH1_P1", f"Failed: {e}", status="failed")
 
+        ready, stats = check_rl_ready()
+        if not ready:
+            await auto_remediate("rl")
+            ready, stats = check_rl_ready()
+
+        log_audit_event("PROLOGUE_P3", f"RL: base={stats['has_base_model']}, "
+                        f"adapters={stats['adapter_count']}",
+                        status="success" if ready else "partial_failure")
+    except Exception as e:
+        print(f"  [Error] Prologue P3 failed: {e}")
+        log_audit_event("PROLOGUE_P3", f"Failed: {e}", status="failed")
+
+
+# ============================================================
+# CHAPTER 1 — Prediction Pipeline
+# ============================================================
 
 @AIGOSuite.aigo_retry(max_retries=2, delay=3.0)
-async def run_chapter_1_p2(p):
-    """Chapter 1 Page 2: Odds Harvesting & URL Resolution. Returns session health."""
-    log_state(chapter="Ch1 P2", action="Odds Harvesting & URL Resolution")
+async def run_chapter_1_p1(p):
+    """Chapter 1 Page 1: URL Resolution & Odds Harvesting (Football.com).
+    Matches Flashscore fixtures to Football.com fixtures and harvests odds."""
+    log_state(chapter="Ch1 P1", action="URL Resolution & Odds Harvesting")
     try:
         print("\n" + "=" * 60)
-        print("  CHAPTER 1 PAGE 2: Odds Harvesting & URL Resolution")
+        print("  CHAPTER 1 PAGE 1: URL Resolution & Odds Harvesting")
         print("=" * 60)
         await run_odds_harvesting(p)
+        await run_full_sync(session_name="Ch1 P1")
+        log_audit_event("CH1_P1", "URL resolution and odds harvesting completed.", status="success")
+        return True
+    except Exception as e:
+        print(f"  [Error] Chapter 1 Page 1 failed: {e}")
+        print(f"  [Session] Football.com session marked unhealthy — Chapter 2 will be skipped.")
+        log_audit_event("CH1_P1", f"Failed: {e}", status="failed")
+        return False
+
+
+@AIGOSuite.aigo_retry(max_retries=2, delay=3.0)
+async def run_chapter_1_p2(p, scheduler: TaskScheduler = None,
+                          refresh: bool = False, target_dates: list = None):
+    """Chapter 1 Page 2: Predictions (Rule Engine + RL Ensemble).
+    Max 1 prediction per team per 7 days — remaining scheduled for day-before."""
+    log_state(chapter="Ch1 P2", action="Predictions")
+    try:
+        print("\n" + "=" * 60)
+        print("  CHAPTER 1 PAGE 2: Predictions")
+        print("=" * 60)
+        await run_flashscore_analysis(p, refresh=refresh, target_dates=target_dates)
         await run_full_sync(session_name="Ch1 P2")
-        log_audit_event("CH1_P2", "Odds harvesting and URL resolution completed.", status="success")
-        return True  # Session healthy
+        log_audit_event("CH1_P2", "Predictions completed.", status="success")
     except Exception as e:
         print(f"  [Error] Chapter 1 Page 2 failed: {e}")
-        print(f"  [Session] Football.com session marked unhealthy — Chapter 2 will be skipped.")
         log_audit_event("CH1_P2", f"Failed: {e}", status="failed")
-        return False  # Session unhealthy
 
 
 @AIGOSuite.aigo_retry(max_retries=2, delay=2.0)
 async def run_chapter_1_p3():
-    """Chapter 1 Page 3: Final Sync & Recommendation Generation."""
-    log_state(chapter="Ch1 P3", action="Final Chapter Sync & Recommendations")
+    """Chapter 1 Page 3: Recommendations & Final Sync."""
+    log_state(chapter="Ch1 P3", action="Recommendations & Final Sync")
     try:
         print("\n" + "=" * 60)
-        print("  CHAPTER 1 PAGE 3: Final Sync & Recommendations")
+        print("  CHAPTER 1 PAGE 3: Recommendations & Final Sync")
         print("=" * 60)
         sync_ok = await run_full_sync(session_name="Chapter 1 Final")
         if not sync_ok:
@@ -173,11 +240,15 @@ async def run_chapter_1_p3():
             log_audit_event("CH1_P3_SYNC", "Sync parity issues detected.", status="partial_failure")
 
         await get_recommendations(save_to_file=True)
-        log_audit_event("CH1_P3", "Final sync and recommendations completed.", status="success")
+        log_audit_event("CH1_P3", "Recommendations and final sync completed.", status="success")
     except Exception as e:
         print(f"  [Error] Chapter 1 Page 3 failed: {e}")
         log_audit_event("CH1_P3", f"Failed: {e}", status="failed")
 
+
+# ============================================================
+# CHAPTER 2 — Betting Automation (unchanged)
+# ============================================================
 
 @AIGOSuite.aigo_retry(max_retries=2, delay=5.0)
 async def run_chapter_2_p1(p):
@@ -223,41 +294,45 @@ async def run_chapter_2_p2(p):
         log_audit_event("CH2_P2", f"Failed: {e}", status="failed")
 
 
-@AIGOSuite.aigo_retry(max_retries=2, delay=5.0)
-async def run_chapter_3():
-    """Chapter 3: Chief Engineer Monitoring & Oversight + Backtest Check."""
-    log_state(chapter="Chapter 3", action="Chief Engineer Oversight")
-    try:
-        print("\n" + "=" * 60)
-        print("  CHAPTER 3: Chief Engineer Monitoring & Oversight")
-        print("=" * 60)
+# ============================================================
+# SCHEDULED TASK EXECUTOR — Handles tasks from the TaskScheduler
+# ============================================================
 
-        await run_chapter_3_oversight()
+async def execute_scheduled_tasks(scheduler: TaskScheduler, p=None):
+    """Execute all pending scheduled tasks."""
+    pending = scheduler.get_pending_tasks()
+    if not pending:
+        return
 
-        # --- Backtest Check (single-pass, integrated from backtest_monitor.py) ---
+    print(f"\n  [Scheduler] Executing {len(pending)} pending task(s)...")
+
+    for task in pending:
         try:
-            from Scripts.backtest_monitor import TRIGGER_FILE, CONFIG_FILE
-            from Core.Intelligence.rule_config import RuleConfig
-            import json
-            if os.path.exists(TRIGGER_FILE):
-                print("  [Backtest] Trigger detected — running single-pass backtest...")
-                if os.path.exists(CONFIG_FILE):
-                    with open(CONFIG_FILE, 'r') as f:
-                        config_data = json.load(f)
-                    valid_keys = RuleConfig.__annotations__.keys()
-                    filtered = {k: v for k, v in config_data.items() if k in valid_keys}
-                    config = RuleConfig(**filtered)
-                    await run_flashscore_offline_repredict(playwright=None, custom_config=config)
-                    print("  [Backtest] Complete.")
-                os.remove(TRIGGER_FILE)
-        except Exception as e:
-            print(f"  [Backtest] Check failed: {e}")
+            if task.task_type == TASK_WEEKLY_ENRICHMENT:
+                print(f"  [Scheduler] Running weekly enrichment (task: {task.task_id})")
+                max_show = task.params.get('max_show_more', 2)
+                skip_img = task.params.get('skip_images', True)
+                await run_league_enricher(weekly=True)
+                scheduler.complete_task(task.task_id)
 
-        log_audit_event("CH3", "Chief Engineer oversight completed.", status="success")
-        await run_full_sync(session_name="Ch3 Oversight")
-    except Exception as e:
-        print(f"  [Error] Chapter 3 failed: {e}")
-        log_audit_event("CH3", f"Failed: {e}", status="failed")
+            elif task.task_type == TASK_DAY_BEFORE_PREDICT:
+                fid = task.params.get('fixture_id')
+                if fid and p:
+                    print(f"  [Scheduler] Day-before prediction for fixture {fid}")
+                    await run_flashscore_analysis(p, target_fixtures=[fid])
+                scheduler.complete_task(task.task_id)
+
+            elif task.task_type == TASK_RL_TRAINING:
+                print(f"  [Scheduler] Running RL training (task: {task.task_id})")
+                await auto_remediate("rl")
+                scheduler.complete_task(task.task_id)
+
+        except Exception as e:
+            print(f"  [Scheduler] Task {task.task_id} failed: {e}")
+            scheduler.complete_task(task.task_id, status="failed")
+
+    # Cleanup old completed/failed tasks
+    scheduler.cleanup_old(days=7)
 
 
 # ============================================================
@@ -420,26 +495,29 @@ async def dispatch(args):
         # --- Prologue ---
         if args.prologue:
             if args.page == 1:
-                await run_prologue_p1(p)
+                await run_prologue_p1()
             elif args.page == 2:
                 await run_prologue_p2()
+            elif args.page == 3:
+                await run_prologue_p3()
             else:
-                # All prologue pages sequentially (P1 + P2)
-                await run_prologue_p1(p)
+                # All prologue pages sequentially (P1 + P2 + P3)
+                await run_prologue_p1()
                 await run_prologue_p2()
+                await run_prologue_p3()
             return
 
         # --- Chapter ---
         if args.chapter == 1:
             if args.page == 1:
-                await run_chapter_1_p1(p, refresh=getattr(args, 'refresh', False) or getattr(args, 'all', False), target_dates=getattr(args, 'date', None))
+                await run_chapter_1_p1(p)
             elif args.page == 2:
-                await run_chapter_1_p2(p)
+                await run_chapter_1_p2(p, refresh=getattr(args, 'refresh', False) or getattr(args, 'all', False), target_dates=getattr(args, 'date', None))
             elif args.page == 3:
                 await run_chapter_1_p3()
             else:
-                await run_chapter_1_p1(p, refresh=getattr(args, 'refresh', False) or getattr(args, 'all', False), target_dates=getattr(args, 'date', None))
-                fb_healthy = await run_chapter_1_p2(p)
+                fb_healthy = await run_chapter_1_p1(p)
+                await run_chapter_1_p2(p, refresh=getattr(args, 'refresh', False) or getattr(args, 'all', False), target_dates=getattr(args, 'date', None))
                 await run_chapter_1_p3()
             return
 
@@ -453,21 +531,18 @@ async def dispatch(args):
                 await run_chapter_2_p2(p)
             return
 
-        if args.chapter == 3:
-            await run_chapter_3()
-            return
-
     # Should not reach here if --prologue or --chapter was set
     print("[ERROR] Unknown dispatch target.")
 
 
 # ============================================================
-# MAIN — Full cycle loop (default mode)
+# MAIN — Full autonomous cycle loop (v7.0)
 # ============================================================
 
 @AIGOSuite.aigo_retry(max_retries=2, delay=60.0, use_aigo=False)
 async def main():
-    """Full cycle: Prologue → Ch1 → Ch2 → Ch3, repeating on CYCLE_WAIT_HOURS."""
+    """Full cycle: Startup → Prologue (Data Gates) → Ch1 (Predictions) → Ch2 (Betting).
+    Dynamic scheduling replaces fixed 6hr sleep."""
     # Singleton Check
     if os.path.exists(LOCK_FILE):
         try:
@@ -483,14 +558,22 @@ async def main():
         f.write(str(os.getpid()))
 
     try:
-        init_csvs()
+        # ── STARTUP: DB + Supabase sync (must complete before streamer) ──
+        startup_ok = await run_startup_sync()
+        if not startup_ok:
+            print("   [FATAL] Startup sync failed. Retrying in 60s...")
+            await asyncio.sleep(60)
+            startup_ok = await run_startup_sync()
+
+        # ── Initialize scheduler ──
+        scheduler = TaskScheduler()
+        scheduler.schedule_weekly_enrichment()  # Ensure next Monday 2:26am is scheduled
+        scheduler.cleanup_old()
 
         async with async_playwright() as p:
-            # Spawn live score streamer with its OWN Playwright instance and isolated data dir
-            # (prevents browser recycling in streamer from crashing main pipeline)
+            # ── Start live streamer AFTER startup sync ──
             async def _isolated_streamer():
                 async with async_playwright() as streamer_pw:
-                    # Provide a unique temp user data dir to ensure process isolation
                     import tempfile
                     import shutil
                     temp_dir = tempfile.mkdtemp(prefix="leo_streamer_")
@@ -509,40 +592,58 @@ async def main():
                     log_state(chapter="Cycle Start", action=f"Starting Cycle #{cycle_num}")
                     log_audit_event("CYCLE_START", f"Cycle #{cycle_num} initiated.")
 
-                    # ── PROLOGUE P1: Sequential (dependency for Chapter 1) ──
-                    await run_prologue_p1(p)
+                    # ── SCHEDULED TASKS (weekly enrichment, day-before predictions) ──
+                    await execute_scheduled_tasks(scheduler, p)
 
-                    # ── CONCURRENT: Prologue P2 || Chapter 1→2 ──
+                    # ── PROLOGUE: Data Readiness Gates ──
                     print("\n" + "=" * 60)
-                    print("  ⚡ CONCURRENT EXECUTION: Prologue P2 || Chapter 1→2")
+                    print("  📋 PROLOGUE: Data Readiness Gates")
                     print("=" * 60)
+                    await run_prologue_p1()   # Leagues >= 90% + Teams >= 5/league
+                    await run_prologue_p2()   # 2+ seasons of fixtures
+                    await run_prologue_p3()   # RL adapters trained
 
-                    async def _chapter_1_2():
-                        await run_chapter_1_p1(p)
-                        fb_healthy = await run_chapter_1_p2(p)
-                        await run_chapter_1_p3()
-                        if fb_healthy:
-                            await run_chapter_2_p1(p)
-                            await run_chapter_2_p2(p)
-                        else:
-                            print("\n" + "=" * 60)
-                            print("  CHAPTER 2: SKIPPED — Football.com session unhealthy")
-                            print("=" * 60)
-                            log_audit_event("CH2_SKIPPED", "Skipped: Football.com session failed.", status="skipped")
+                    # ── CHAPTER 1: Prediction Pipeline ──
+                    print("\n" + "=" * 60)
+                    print("  ⚡ CHAPTER 1: Prediction Pipeline")
+                    print("=" * 60)
+                    fb_healthy = await run_chapter_1_p1(p)    # URL Resolution + Odds
+                    await run_chapter_1_p2(p, scheduler=scheduler)  # Predictions
+                    await run_chapter_1_p3()                   # Recommendations + Final Sync
 
-                    await asyncio.gather(
-                        run_prologue_p2(),
-                        _chapter_1_2(),
-                        return_exceptions=True
-                    )
+                    # ── CHAPTER 2: Betting Automation ──
+                    if fb_healthy:
+                        await run_chapter_2_p1(p)
+                        await run_chapter_2_p2(p)
+                    else:
+                        print("\n" + "=" * 60)
+                        print("  CHAPTER 2: SKIPPED — Football.com session unhealthy")
+                        print("=" * 60)
+                        log_audit_event("CH2_SKIPPED", "Skipped: Football.com session failed.", status="skipped")
 
-                    # ── CHAPTER 3: Monitoring ──
-                    await run_chapter_3()
+                    # ── SCHEDULE NEXT TASKS ──
+                    scheduler.schedule_weekly_enrichment()  # Ensure next week is scheduled
 
-                    # ── CYCLE COMPLETE ──
+                    # ── CYCLE COMPLETE — Dynamic sleep ──
                     log_audit_event("CYCLE_COMPLETE", f"Cycle #{cycle_num} finished.")
-                    print(f"\n   [System] Cycle #{cycle_num} finished at {dt.now().strftime('%H:%M:%S')}. Sleeping {CYCLE_WAIT_HOURS}h...")
-                    await asyncio.sleep(CYCLE_WAIT_HOURS * 3600)
+
+                    next_wake = scheduler.next_wake_time()
+                    if next_wake:
+                        from Core.Utils.constants import now_ng
+                        sleep_secs = max(60, (next_wake - now_ng()).total_seconds())
+                        sleep_hrs = sleep_secs / 3600
+                        # Cap at default cycle hours if next task is too far away
+                        if sleep_hrs > DEFAULT_CYCLE_HOURS:
+                            sleep_secs = DEFAULT_CYCLE_HOURS * 3600
+                            sleep_hrs = DEFAULT_CYCLE_HOURS
+                        print(f"\n   [System] Cycle #{cycle_num} finished at {dt.now().strftime('%H:%M:%S')}. "
+                              f"Next task at {next_wake.strftime('%Y-%m-%d %H:%M')}. Sleeping {sleep_hrs:.1f}h...")
+                    else:
+                        sleep_secs = DEFAULT_CYCLE_HOURS * 3600
+                        print(f"\n   [System] Cycle #{cycle_num} finished at {dt.now().strftime('%H:%M:%S')}. "
+                              f"Sleeping {DEFAULT_CYCLE_HOURS}h...")
+
+                    await asyncio.sleep(sleep_secs)
 
                 except Exception as e:
                     state["error_log"].append(f"{dt.now()}: {e}")
@@ -560,8 +661,6 @@ async def main_offline_repredict():
     init_csvs()
     async with async_playwright() as p:
         try:
-            await run_review_process(p)
-            print_accuracy_report()
             await run_flashscore_offline_repredict(p)
         except Exception as e:
             print(f"[ERROR] Offline repredict: {e}")

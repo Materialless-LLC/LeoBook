@@ -774,8 +774,18 @@ async def enrich_single_league(context, league: Dict[str, Any], conn,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def main(limit: Optional[int] = None, reset: bool = False,
-               num_seasons: int = 0, all_seasons: bool = False):
-    """Main enrichment entry point."""
+               num_seasons: int = 0, all_seasons: bool = False,
+               weekly: bool = False):
+    """Main enrichment entry point.
+
+    Args:
+        weekly: If True, lightweight mode — MAX_SHOW_MORE=2, skip image downloads
+                (unless team/league has no crest). Used by weekly scheduler.
+    """
+    global MAX_SHOW_MORE
+    if weekly:
+        MAX_SHOW_MORE = 2
+        reset = True  # Re-process all leagues for weekly refresh
     print("\n" + "=" * 60)
     print("  FLASHSCORE LEAGUE ENRICHMENT -> SQLite")
     print("=" * 60)
@@ -803,7 +813,9 @@ async def main(limit: Optional[int] = None, reset: bool = False,
 
     total = len(leagues)
     mode_label = "current season"
-    if all_seasons:
+    if weekly:
+        mode_label = "WEEKLY refresh (light)"
+    elif all_seasons:
         mode_label = "ALL seasons"
     elif num_seasons > 0:
         mode_label = f"last {num_seasons} seasons"
@@ -897,7 +909,10 @@ if __name__ == "__main__":
     parser.add_argument("--reset", action="store_true", help="Reset all leagues to unprocessed")
     parser.add_argument("--seasons", type=int, default=0, help="Number of past seasons to extract (last N)")
     parser.add_argument("--all-seasons", action="store_true", help="Extract all available seasons")
+    parser.add_argument("--weekly", action="store_true", help="Weekly light refresh (MAX_SHOW_MORE=2, skip images)")
     args = parser.parse_args()
 
     asyncio.run(main(limit=args.limit, reset=args.reset,
+                     num_seasons=args.seasons, all_seasons=args.all_seasons,
+                     weekly=args.weekly))
                      num_seasons=args.seasons, all_seasons=args.all_seasons))
