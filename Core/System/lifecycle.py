@@ -159,10 +159,10 @@ Examples:
   python Leo.py --enrich-leagues            Extract Flashscore league pages -> SQLite
   python Leo.py --enrich-leagues --limit 5  Extract first 5 unprocessed leagues
   python Leo.py --enrich-leagues --reset    Reset and extract all leagues
-   python Leo.py --enrich-leagues --seasons 2 Extract last 2 seasons per league
-   python Leo.py --enrich-leagues --all-seasons Extract all available seasons
-   python Leo.py --train-rl               Train RL model from historical fixtures
-   python Leo.py --train-rl --league ID   Fine-tune a specific league adapter
+  python Leo.py --enrich-leagues --seasons 2 Extract last 2 seasons per league
+  python Leo.py --enrich-leagues --all-seasons Extract all available seasons
+  python Leo.py --train-rl               Train RL model from historical fixtures
+  python Leo.py --train-rl --league ID   Fine-tune a specific league adapter
         """
     )
     # --- Granular Chapter / Page Selection ---
