@@ -287,7 +287,8 @@ EXTRACT_MATCHES_JS = r"""(ctx) => {
             away_crest_url: awayCrest,
             league_stage: currentRound,
             extra: extraTag || null,
-            url: `/match/${fixtureId}/#/match-summary`
+            url: `/match/${fixtureId}/#/match-summary`,
+            match_link: mLink || ''
         });
     });
 
@@ -685,6 +686,7 @@ async def enrich_single_league(context, league: Dict[str, Any], conn,
     name = league["name"]
     url = league.get("url", "")
     country_code = league.get("country_code", "")
+    continent = league.get("continent", "")
 
     print(f"\n{'='*60}")
     print(f"  [{idx}/{total}] {name} ({league_id})")
@@ -801,8 +803,9 @@ async def enrich_single_league(context, league: Dict[str, Any], conn,
         season = await page.evaluate(EXTRACT_SEASON_JS, selectors)
         print(f"    [Season] {season or '(not found)'}")
 
-        # ── Construct region_league ──────────────────────────────────────
-        region_league = f"{region_name}: {name}" if region_name else name
+        # ── Construct region_league from seed data ────────────────────────
+        # continent is from leagues.json (e.g. "Europe", "Africa") — always available
+        region_league = f"{continent}: {name}" if continent else name
 
         # ── Update league in DB with all extracted data ───────────────────
         upsert_league(conn, {
