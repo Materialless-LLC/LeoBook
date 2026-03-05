@@ -2,7 +2,7 @@
 
 **Developer**: Materialless LLC
 **Chief Engineer**: Emenike Chinenye James
-**Powered by**: Multi-Key Gemini Rotation (25+ Keys, 5 Models) · xAI Grok API (Optional)
+**Powered by**: Multi-Key Gemini Rotation (25+ Keys, 6 Models) · xAI Grok API (Optional)
 **Architecture**: Autonomous High-Velocity Architecture v7.0 (Data Readiness Gates + Task Scheduler + Neural RL)
 
 ---
@@ -27,7 +27,7 @@ For the complete file inventory and step-by-step execution trace, see [LeoBook_T
 ```
 Leo.py (Orchestrator)
 ├── Startup (Initialization):
-│   └── Ensure DB Parity → Bi-directional Cloud Sync (Bootstrap)
+│   └── Push-Only Sync → Supabase (auto-bootstrap if local DB empty)
 ├── Task Scheduler:
 │   └── Execute Pending Tasks (Weekly Enrichment, Day-before Predictions)
 ├── Prologue (Data Readiness Gates):
@@ -36,7 +36,7 @@ Leo.py (Orchestrator)
 │   └── P3: RL Adapter Readiness Check
 ├── Chapter 1 (Prediction Pipeline):
 │   ├── Ch1 P1: URL Resolution & Odds Harvesting (Football.com)
-│   ├── Ch1 P2: Predictions (Rule Engine + Neural RL Ensemble)
+│   ├── Ch1 P2: Predictions (Pure DB — Rule Engine + Neural RL Ensemble, no browser)
 │   │   └── Smart Scheduling: Max 1 per team/week (remaining vs Scheduler)
 │   └── Ch1 P3: Recommendations & Final Chapter Sync
 ├── Chapter 2 (Betting Automation):
@@ -124,7 +124,8 @@ bash .devcontainer/setup.sh         # Auto-config system environment
 
 # Execution
 python Leo.py              # Autonomous Orchestrator (Full dynamic cycle)
-python Leo.py --sync        # Watermark-based cloud sync (delta only)
+python Leo.py --sync        # Push local changes to Supabase
+python Leo.py --pull        # Pull ALL from Supabase → local SQLite (recovery)
 python Leo.py --prologue    # Data readiness check (P1-P3)
 python Leo.py --chapter 1   # Prediction pipeline (Odds → Predict → Sync)
 python Leo.py --chapter 2   # Betting automation
@@ -168,5 +169,5 @@ python Leo.py --help                    # Comprehensive CLI command catalog
 
 ---
 
-*Last updated: March 5, 2026 (v7.1 — Watermark Delta Sync + CLI Cleanup)*
+*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + DB-Driven Predictions + --pull CLI + gemini-3.1-flash-lite)*
 *LeoBook Engineering Team*

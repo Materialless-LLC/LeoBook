@@ -42,7 +42,7 @@ Hardcoded pixel values are eliminated.
 | **State Management** | `flutter_bloc` / `Cubit` (HomeCubit, UserCubit, SearchCubit) |
 | **Architecture** | Clean Architecture (Data → Logic → Presentation) |
 | **Responsive System** | Custom `lib/core/constants/responsive_constants.dart` |
-| **Backend** | Supabase bi-directional sync + Local CSV handshake |
+| **Backend** | Supabase (push-only read mirror from local SQLite) |
 | **Font** | Google Fonts — Lexend |
 | **Theme** | Material 3, Liquid Glass dark mode |
 

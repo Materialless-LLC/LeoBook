@@ -29,12 +29,14 @@ Before writing ANY code, ask in this exact order:
 ### 2.2 Startup Bootstrapping (MANDATORY)
 
 Every entry point (`main()`) MUST call `await run_startup_sync()`. This function ensures:
-1. SQLite parity with Supabase via **watermark-based delta sync** (only rows modified since last sync are fetched — NOT full table scans).
-2. Local database existence.
-3. Supabase table existence.
+1. SQLite → Supabase **push-only sync** (only local rows modified since last watermark are pushed — ZERO reads from Supabase).
+2. Auto-bootstrap: if local DB is empty, pulls all data from Supabase (one-time).
+3. Local database and Supabase table existence.
 Operations MUST NOT start (including live streamer) until startup sync completes successfully.
 
-**Sync runs ONLY in Ch1 P3** (Final Sync). Ch1 P1 and Ch1 P2 do NOT sync — sync is consolidated to avoid redundant 20+ minute full-table scans.
+**Manual recovery**: `python Leo.py --pull` pulls ALL data from Supabase → local SQLite.
+
+**Sync runs ONLY in Ch1 P3** (Final Sync). Ch1 P1 and Ch1 P2 do NOT sync — sync is consolidated to end of pipeline.
 
 ### 2.3 Data Readiness Gates (Prologue)
 
@@ -49,15 +51,15 @@ Leo.py operates via three sequential gates to ensure data integrity:
 ### 2.4 Pipeline Structure (v7.0)
 
 ```
-Startup Sync: Bootstrap parity (DB + Tables)
+Startup Sync: Push-only (local → Supabase, auto-bootstrap if empty)
 Task Scheduler: Execute pending tasks (Weekly Enrichment, predictions)
 Prologue (Data Gates):
     P1: League/Team Thresholds (90% / 5 teams)
     P2: Historical Data Check (2+ Seasons)
     P3: AI RL Adapter Readiness
 Chapter 1:
-    P1: URL Resolution & Odds Harvesting (Football.com)
-    P2: Prediction Pipeline (Rule Engine + RL Ensemble)
+    P1: URL Resolution & Odds Harvesting (Football.com, no login)
+    P2: Prediction Pipeline (Pure DB — Rule Engine + RL Ensemble, no browser)
         - Constraint: Max 1 prediction per team per week.
         - Surplus scheduled as 'day_before_predict' tasks.
     P3: Final Recommendations & Sync
@@ -228,6 +230,6 @@ python -c "from Core.System.data_readiness import DataReadinessChecker; print('[
 
 ---
 
-*Last updated: March 5, 2026 (v7.1 — Watermark Delta Sync + CLI Cleanup)*
+*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + DB-Driven Predictions + --pull CLI + gemini-3.1-flash-lite)*
 *Authored by: LeoBook Engineering Team*
 

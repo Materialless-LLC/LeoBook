@@ -1,6 +1,6 @@
 # LeoBook Algorithm & Codebase Reference
 
-> **Version**: 7.0 · **Last Updated**: 2026-03-03 · **Architecture**: Autonomous High-Velocity Architecture (Task Scheduler + Data Readiness Gates + Neural RL)
+> **Version**: 7.2 · **Last Updated**: 2026-03-06 · **Architecture**: Autonomous High-Velocity Architecture (Task Scheduler + Data Readiness Gates + Neural RL)
 
 This document maps the **execution flow** of [Leo.py](Leo.py) to specific files and functions.
 
@@ -13,7 +13,7 @@ Leo.py is an **autonomous orchestrator** powered by a **dynamic Task Scheduler**
 ```
 Leo.py (Orchestrator) v7.0
 ├── Startup (Bootstrap):
-│   └── Bi-directional Sync → Parallel Streamer Ignition
+│   └── Push-Only Sync → Supabase (auto-bootstrap if local DB empty)
 ├── Task Scheduler:
 │   └── Pending Task Execution (Weekly Enrichment, Day-before Predictions)
 ├── Prologue (Data Readiness Gates):
@@ -22,7 +22,7 @@ Leo.py (Orchestrator) v7.0
 │   └── P3: AI Readiness (RL Adapters)
 ├── Chapter 1 (Prediction Pipeline):
 │   ├── P1: Odds Harvesting & URL Resolution
-│   ├── P2: Prediction (Rule Engine + RL Ensemble)
+│   ├── P2: Prediction (Pure DB — Rule Engine + RL Ensemble, no browser)
 │   │   └── Smart Scheduling (Max 1/team/week)
 │   └── P3: Recommendations & Final Chapter Sync
 ├── Chapter 2 (Betting Automation):
@@ -89,5 +89,5 @@ The standalone `standings` table has been deprecated and removed.
 
 ---
 
-*Last updated: March 3, 2026 (v7.0 — Autonomous Scheduler Architecture)*
+*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + DB-Driven Predictions)*
 *LeoBook Engineering Team*
