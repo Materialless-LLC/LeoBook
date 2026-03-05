@@ -41,7 +41,7 @@ Operations MUST NOT start (including live streamer) until startup sync completes
 Leo.py operates via three sequential gates to ensure data integrity:
 
 1. **Prologue P1 (Quantity Gate)**: Leagues >= 90% coverage AND Teams >= 5 per league.
-2. **Prologue P2 (History Gate)**: Minimum 2+ historical seasons of fixtures.
+2. **Prologue P2 (History Gate)**: Minimum 2+ distinct seasons of fixture data per league (seasons, not calendar years — includes current season).
 3. **Prologue P3 (AI Gate)**: RL Adapters must be trained and ready.
 
 **Auto-Remediation**: If a gate fails, Leo.py MUST attempt to trigger the relevant enrichment or training script automatically (`auto_remediate`).

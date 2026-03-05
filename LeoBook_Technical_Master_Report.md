@@ -117,7 +117,7 @@ Leo.py orchestrates the cycle with autonomous task management:
 1. **Task Scheduler Check**: Execute pending tasks (`weekly_enrichment`, `day_before_predict`).
 2. **Prologue (Data Readiness Gates)**:
     - **P1: Quantity Gate**: Threshold check (Leagues/Teams).
-    - **P2: History Gate**: Historical season fixtures check.
+    - **P2: History Gate**: 2+ distinct seasons of fixtures per league (not calendar years — includes current season).
     - **P3: AI Gate**: RL Adapter training check.
     - *Auto-remediation triggers if any gate fails.*
 3. **Chapter 1: Prediction Pipeline**:

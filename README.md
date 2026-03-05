@@ -32,7 +32,7 @@ Leo.py (Orchestrator)
 │   └── Execute Pending Tasks (Weekly Enrichment, Day-before Predictions)
 ├── Prologue (Data Readiness Gates):
 │   ├── P1: League/Team Threshold Check (90% Coverage)
-│   ├── P2: Historical Seasons Check (2+ Seasons)
+│   ├── P2: Historical Seasons Check (2+ distinct seasons including current)
 │   └── P3: RL Adapter Readiness Check
 ├── Chapter 1 (Prediction Pipeline):
 │   ├── Ch1 P1: URL Resolution & Odds Harvesting (Football.com)
