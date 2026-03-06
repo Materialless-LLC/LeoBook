@@ -219,7 +219,7 @@ class RLTrainer:
         reward_tensor = torch.tensor([reward], dtype=torch.float32, device=self.device)
 
         # Advantage = reward - value (simple 1-step)
-        advantage = reward_tensor - value.squeeze()
+        advantage = reward_tensor - value.squeeze(-1)
 
         # PPO clipped loss
         ratio = torch.exp(log_prob - log_prob.detach())  # Will be 1.0 for fresh samples
@@ -227,7 +227,7 @@ class RLTrainer:
         policy_loss = -torch.min(ratio * advantage.detach(), clipped * advantage.detach())
 
         # Value loss
-        value_loss = nn.functional.mse_loss(value.squeeze(), reward_tensor)
+        value_loss = torch.nn.functional.mse_loss(value.squeeze(-1), reward_tensor)
 
         # Entropy bonus (encourage exploration)
         entropy = dist.entropy()
@@ -268,6 +268,7 @@ class RLTrainer:
             limit_days: Optional limit on number of training days (for testing).
         """
         from Data.Access.db_helpers import _get_conn
+        import os
 
         conn = _get_conn()
         os.makedirs(MODELS_DIR, exist_ok=True)
@@ -291,11 +292,13 @@ class RLTrainer:
             return
 
         # Apply 2-season window: only use recent data
+        # Also exclude future dates (unplayed fixtures produce garbage rewards)
+        today_str = datetime.now().strftime("%Y-%m-%d")
         try:
             latest_date = datetime.strptime(all_dates[-1], "%Y-%m-%d")
             cutoff = latest_date - timedelta(days=self.max_seasons_back * 365)
             cutoff_str = cutoff.strftime("%Y-%m-%d")
-            all_dates = [d for d in all_dates if d >= cutoff_str]
+            all_dates = [d for d in all_dates if d >= cutoff_str and d <= today_str]
         except (ValueError, IndexError):
             pass
 

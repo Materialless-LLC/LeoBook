@@ -1,4 +1,4 @@
-# LeoBook Developer RuleBook v7.0
+# LeoBook Developer RuleBook v7.2
 
 > **This document is LAW.** Every developer and AI agent working on LeoBook MUST follow these rules without exception. Violations will break the system.
 
@@ -46,7 +46,7 @@ Leo.py operates via three sequential gates to ensure data integrity:
 2. **Prologue P2 (History Gate)**: Minimum 2+ distinct seasons of fixture data per league (seasons, not calendar years — includes current season).
 3. **Prologue P3 (AI Gate)**: RL Adapters must be trained and ready.
 
-**Auto-Remediation**: If a gate fails, Leo.py MUST attempt to trigger the relevant enrichment or training script automatically (`auto_remediate`).
+**Auto-Remediation**: If a gate fails, Leo.py triggers the relevant enrichment or training script automatically (`auto_remediate`) with a **30-minute timeout**. If remediation exceeds the budget, the system logs a warning and proceeds with available data. The pipeline is never blocked indefinitely by auto-remediation.
 
 ### 2.4 Pipeline Structure (v7.0)
 
@@ -60,8 +60,11 @@ Prologue (Data Gates):
 Chapter 1:
     P1: URL Resolution & Odds Harvesting (Football.com, no login)
     P2: Prediction Pipeline (Pure DB — Rule Engine + RL Ensemble, no browser)
-        - Constraint: Max 1 prediction per team per week.
-        - Surplus scheduled as 'day_before_predict' tasks.
+        - DATA LEAK GUARD: Max 1 prediction per team per week.
+          This prevents the model from using future match data to predict
+          earlier matches. A team's next match can only be predicted once
+          their most recent match result is known.
+        - Surplus matches are queued as 'day_before_predict' tasks.
     P3: Final Recommendations & Sync
 Chapter 2:
     P1: Automated Booking (Football.com)
@@ -104,6 +107,8 @@ Every Python file MUST have this header format:
 
 - **Rule**: Every timestamp MUST use the Nigerian timezone (**Africa/Lagos**, UTC+1).
 - **Tooling**: Use `Core.Utils.constants.now_ng()` for all time operations.
+- **Rationale**: Football.com operates exclusively in Nigeria/Ghana (WAT timezone). Developer location is WAT. Cross-league timezone normalization (UTC/CET for European leagues) is planned but deferred to avoid complexity during current testing phase.
+- **Edge case**: European daylight saving transitions may cause 1-hour misalignment in match time parsing during DST transition weeks.
 
 ### 2.10 High-Velocity Data Ingestion (Selective Enrichment)
 
@@ -230,6 +235,23 @@ python -c "from Core.System.data_readiness import DataReadinessChecker; print('[
 
 ---
 
-*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + DB-Driven Predictions + --pull CLI + gemini-3.1-flash-lite)*
-*Authored by: LeoBook Engineering Team*
+## 8. Bet Safety Guardrails
 
+> See [PROJECT_STAIRWAY.md](PROJECT_STAIRWAY.md) for the capital strategy and [LeoBook_Technical_Master_Report.md](LeoBook_Technical_Master_Report.md) Section 6 for the full guardrails specification.
+
+- **Dry-Run Mode** (PLANNED): `--dry-run` flag that logs intended bets without placing them. Must be the default until full pipeline validation.
+- **Kill Switch** (PLANNED): A flag file (`STOP_BETTING`) that halts all bet placement when present.
+- **Audit Logging** (IMPLEMENTED): Every bet cycle writes to `audit_log` in both SQLite and Supabase.
+- **Confidence Gating** (IMPLEMENTED): Predictions below threshold are marked `SKIP` and never progress to betting.
+
+---
+
+## 9. RULEBOOK Enforcement
+
+- **Current**: This document is mandatory reading for all developers and AI agents. Compliance is honour-based.
+- **Planned**: Pre-commit hooks and linter rules where automatable (e.g., SelectorManager usage, no hardcoded selectors, file headers).
+
+---
+
+*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + Safety Guardrails + 13-Discrepancy Resolution)*
+*Authored by: LeoBook Engineering Team — Materialless LLC*

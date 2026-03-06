@@ -3,7 +3,7 @@
 **Developer**: Materialless LLC
 **Chief Engineer**: Emenike Chinenye James
 **Powered by**: Multi-Key Gemini Rotation (25+ Keys, 6 Models) · xAI Grok API (Optional)
-**Architecture**: Autonomous High-Velocity Architecture v7.0 (Data Readiness Gates + Task Scheduler + Neural RL)
+**Architecture**: Autonomous High-Velocity Architecture v7.2 (Data Readiness Gates + Task Scheduler + Neural RL)
 
 ---
 
@@ -48,9 +48,9 @@ Leo.py (Orchestrator)
 ### Key Subsystems
 
 - **Autonomous Task Scheduler**: Manages recurring tasks (Weekly enrichment, Monday 2:26am) and time-sensitive tasks (Day-before match predictions).
-- **Data Readiness Gates**: Automated pre-flight checks with **Auto-Remediation** — if leagues, historical seasons, or RL adapters are missing, Leo.py triggers the relevant enrichment/training scripts automatically.
+- **Data Readiness Gates**: Automated pre-flight checks with **Auto-Remediation** (30-minute timeout) — if leagues, historical seasons, or RL adapters are missing, Leo.py triggers the relevant enrichment/training scripts automatically. If remediation times out, the system proceeds with available data.
 - **Standings VIEW**: High-performance standings computed directly from the `schedules` table via Postgres UNION ALL views. Zero storage, always fresh.
-- **Smart Prediction Scheduling**: Enforces a "1 Prediction Per Team Per Week" constraint. The earliest match is predicted immediately; subsequent matches for the same team are scheduled as `day_before_predict` tasks in the scheduler.
+- **Data Leak Guard**: Max 1 prediction per team per week. This is NOT a frequency cap — it prevents the model from predicting future matches before prerequisite match results are known. Surplus matches are queued by the Scheduler.
 - **Neural RL Engine** (`Core/Intelligence/rl/`): SharedTrunk + LoRA league adapters + league-conditioned team adapters. PPO training with chronological walkthrough and composite rewards.
 
 ### Core Modules
@@ -162,12 +162,13 @@ python Leo.py --help                    # Comprehensive CLI command catalog
 
 | Document | Purpose |
 |----------|---------|
-| [RULEBOOK.md](RULEBOOK.md) | **MANDATORY** — Engineering standards & v7.0 decisions |
-| [LeoBook_Technical_Master_Report.md](LeoBook_Technical_Master_Report.md) | File inventory & system trace |
+| [RULEBOOK.md](RULEBOOK.md) | **MANDATORY** — Engineering standards & philosophy |
+| [PROJECT_STAIRWAY.md](PROJECT_STAIRWAY.md) | Capital compounding strategy — the "why" behind LeoBook |
+| [LeoBook_Technical_Master_Report.md](LeoBook_Technical_Master_Report.md) | File inventory, execution flow, safety guardrails, observability |
 | [leobook_algorithm.md](leobook_algorithm.md) | Algorithm reference (RuleEngine + Neural RL) |
 | [AIGO_Learning_Guide.md](AIGO_Learning_Guide.md) | Self-healing extraction pipeline |
 
 ---
 
-*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + DB-Driven Predictions + --pull CLI + gemini-3.1-flash-lite)*
-*LeoBook Engineering Team*
+*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + Safety Guardrails Design + 13-Discrepancy Audit Resolution + PROJECT_STAIRWAY)*
+*LeoBook Engineering Team — Materialless LLC*

@@ -8,6 +8,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from Core.Intelligence.aigo_suite import AIGOSuite
+from Core.Intelligence.llm_health_manager import health_manager
 from supabase import create_client
 from dotenv import load_dotenv
 from Data.Access.db_helpers import _get_conn, save_team_entry, save_region_league_entry
@@ -438,6 +439,11 @@ async def main():
         if not league_list: continue
         print(f"\nâ”€â”€ {pass_name}: Leagues â”€â”€")
         for i in range(0, len(league_list), BATCH_SIZE):
+            # Circuit breaker: skip if all LLM providers are down
+            if not health_manager._gemini_active and not getattr(health_manager, '_grok_active', False):
+                remaining = len(league_list) - i
+                print(f"  [SearchDict] All LLM providers offline -- skipping {remaining} remaining leagues.")
+                break
             batch = league_list[i:i + BATCH_SIZE]
             print(f"  Processing batch of {len(batch)} leagues...")
             results = await async_query_llm_for_metadata(batch, item_type="league")
@@ -476,6 +482,11 @@ async def main():
         if not team_ids: continue
         print(f"\nâ”€â”€ {pass_name}: Teams â”€â”€")
         for i in range(0, len(team_ids), BATCH_SIZE):
+            # Circuit breaker: skip if all LLM providers are down
+            if not health_manager._gemini_active and not getattr(health_manager, '_grok_active', False):
+                remaining = len(team_ids) - i
+                print(f"  [SearchDict] All LLM providers offline -- skipping {remaining} remaining teams.")
+                break
             batch_ids = team_ids[i:i + BATCH_SIZE]
             batch_names = [list(teams_raw[tid]["names"])[0] for tid in batch_ids] # Use first name as input
             print(f"  Processing batch of {len(batch_ids)} teams...")

@@ -11,7 +11,7 @@ This document maps the **execution flow** of [Leo.py](Leo.py) to specific files 
 Leo.py is an **autonomous orchestrator** powered by a **dynamic Task Scheduler** (`Core/System/scheduler.py`). It no longer relies on a static 6h loop; instead, it wakes up at target task times or operates at default intervals.
 
 ```
-Leo.py (Orchestrator) v7.0
+Leo.py (Orchestrator) v7.2
 ├── Startup (Bootstrap):
 │   └── Push-Only Sync → Supabase (auto-bootstrap if local DB empty)
 ├── Task Scheduler:
@@ -23,7 +23,7 @@ Leo.py (Orchestrator) v7.0
 ├── Chapter 1 (Prediction Pipeline):
 │   ├── P1: Odds Harvesting & URL Resolution
 │   ├── P2: Prediction (Pure DB — Rule Engine + RL Ensemble, no browser)
-│   │   └── Smart Scheduling (Max 1/team/week)
+│   │   └── Data Leak Guard (Max 1/team/week — prevents stale-data predictions)
 │   └── P3: Recommendations & Final Chapter Sync
 ├── Chapter 2 (Betting Automation):
 │   ├── P1: Automated Booking (Football.com)
@@ -41,10 +41,10 @@ Leo.py implements three sequential high-level gates handled by `DataReadinessChe
 
 1. **Gate P1 (Quantity)**: Checks if the local database has sufficient coverage. 
    - **Thresholds**: 90% of `leagues.json` entries must exist in the DB, and each league must have at least 5 teams. 
-   - **Remediation**: Triggers `enrich_leagues.py` (Full Mode).
+   - **Remediation**: Triggers `enrich_leagues.py` (Full Mode) with 30-minute timeout.
 2. **Gate P2 (History)**: Checks for historical fixture coverage.
-   - **Threshold**: Minimum of 2 completed seasons for active leagues.
-   - **Remediation**: Triggers `enrich_leagues.py --seasons 2`.
+   - **Threshold**: ≥ 80% of leagues with fixtures have 2+ distinct seasons.
+   - **Remediation**: Triggers `enrich_leagues.py --seasons 2` with 30-minute timeout. If enrichment exceeds the budget, proceeds with available data.
 3. **Gate P3 (AI)**: Checks if the Reinforcement Learning adapters are trained for the active schedule.
    - **Remediation**: Triggers `trainer.py` via `python Leo.py --train-rl`.
 
@@ -62,12 +62,15 @@ Handled by `TaskScheduler` ([scheduler.py](Core/System/scheduler.py)), supportin
 
 ---
 
-## Smart Prediction Scheduling
+## Data Leak Guard (Max 1 Prediction/Team/Week)
 
-**The 1-Match Rule**: To prevent stale data leakage in RL inference, a team can only have **one prediction per 7-day window** in the active pipeline.
+**Purpose**: Prevent data leakage in RL inference. This is NOT a business frequency cap — it is a technical safeguard.
+
+- The prediction model is built on recent form (last 10 matches). Predicting a team's future match before their most recent pending match resolves would create a data leak — the result of match N influences match N+1's prediction.
 - If Team A plays on Monday and Thursday:
   - Monday match: Predicted during Monday's cycle.
-  - Thursday match: Scheduled in the database. On Wednesday (24h before), the Scheduler wakes Leo up to predict the Thursday match using the Monday match's result for fresh form encoding.
+  - Thursday match: Scheduled as `day_before_predict`. On Wednesday (24h before), the Scheduler wakes Leo to predict using Monday's result for fresh form encoding.
+- **Enforcement**: At the team-prediction layer in Chapter 1 P2. Surplus matches are queued by the Scheduler, not discarded.
 
 ---
 
@@ -84,10 +87,15 @@ The standalone `standings` table has been deprecated and removed.
 ## Neural RL Engine (`Core/Intelligence/rl/`)
 
 **Architecture**: SharedTrunk + LoRA league adapters + league-conditioned team adapters.
+
 - **Primary Reward**: Prediction accuracy.
 - **Constraint**: Same team produces different predictions in different competitions.
+- **Cold-Start**: New leagues/teams get a generic adapter; the model defaults to conservative predictions.
+- **Fine-Tune Threshold**: After 50+ matches, an adapter becomes eligible for fine-tuning.
+- **Training**: Chronological day-by-day walk-through using only historical data (future dates excluded). PPO with composite rewards and clipped gradients.
+- **Circuit Breaker**: SearchDict LLM enrichment skips remaining batches if all providers (Gemini + Grok) are offline.
 
 ---
 
-*Last updated: March 6, 2026 (v7.2 — Push-Only Sync + DB-Driven Predictions)*
-*LeoBook Engineering Team*
+*Last updated: March 6, 2026 (v7.2 — Data Leak Guard + 30-min Remediation Timeout + LoRA Lifecycle + Safety Guardrails)*
+*LeoBook Engineering Team — Materialless LLC*
