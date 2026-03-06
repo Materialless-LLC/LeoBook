@@ -434,6 +434,9 @@ async def main():
     print(f"\nâ”€â”€ PASS 2: Leagues â”€â”€")
     print(f"  {len(incomplete_leagues_list)} leagues to re-process (incomplete data).")
 
+    # --- Ensure health manager is initialized before circuit-breaker checks ---
+    await health_manager.ensure_initialized()
+
     # --- Process Leagues ---
     for league_list, pass_name in [(empty_leagues, "PASS 1"), (incomplete_leagues_list, "PASS 2")]:
         if not league_list: continue

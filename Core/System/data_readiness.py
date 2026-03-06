@@ -179,12 +179,10 @@ async def auto_remediate(check: str, conn=None, timeout_minutes: int = 30) -> bo
         True if remediation completed, False if timed out or failed.
     """
     if check == "leagues":
-        print("  [AUTO] Running league enrichment + search dict rebuild...")
+        print("  [AUTO] Running league enrichment...")
         try:
             from Scripts.enrich_leagues import main as run_enricher
             await asyncio.wait_for(run_enricher(), timeout=timeout_minutes * 60)
-            from Scripts.build_search_dict import main as run_search_dict
-            await asyncio.wait_for(run_search_dict(), timeout=timeout_minutes * 60)
             return True
         except asyncio.TimeoutError:
             print(f"  [AUTO] Enrichment exceeded {timeout_minutes}min budget -- proceeding with available data.")
@@ -199,8 +197,6 @@ async def auto_remediate(check: str, conn=None, timeout_minutes: int = 30) -> bo
         try:
             from Scripts.enrich_leagues import main as run_enricher
             await asyncio.wait_for(run_enricher(num_seasons=2), timeout=timeout_minutes * 60)
-            from Scripts.build_search_dict import main as run_search_dict
-            await asyncio.wait_for(run_search_dict(), timeout=timeout_minutes * 60)
             return True
         except asyncio.TimeoutError:
             print(f"  [AUTO] Season enrichment exceeded {timeout_minutes}min budget -- proceeding with available data.")
