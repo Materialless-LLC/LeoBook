@@ -250,6 +250,8 @@ Examples:
                         help='Upload trained RL models → Supabase Storage')
     parser.add_argument('--pull-models', action='store_true',
                         help='Download RL models from Supabase Storage → local')
+    parser.add_argument('--skip-large', action='store_true',
+                        help='Skip files > 50 MB during --push-models (upload only trunk + adapters)')
 
     parser.add_argument('--rule-engine', action='store_true',
                        help='Show default rule engine info (combine with --list, --set-default, --backtest)')
