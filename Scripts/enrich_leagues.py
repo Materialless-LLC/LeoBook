@@ -1199,13 +1199,13 @@ async def main(
     # Queue drain: only runs when explicitly requested via --drain-queue.
     # In normal enrichment runs, silently skips exhausted items (attempts >= 2)
     # so no browser startup overhead is added to every invocation.
-    if drain_queue:
-        await drain_enrichment_queue(conn, force=True)
-        conn.close()
-        return
-    else:
+    #if drain_queue:
+        # drain_enrichment_queue(conn, force=True)
+        #conn.close()
+        #return
+    #else:
         # Non-blocking notification: logs exhausted item count, no browser opened
-        await drain_enrichment_queue(conn, force=False)
+        #await drain_enrichment_queue(conn, force=False)
 
     if reset:
         conn.execute("UPDATE leagues SET processed = 0")
