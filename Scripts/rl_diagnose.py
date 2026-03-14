@@ -70,43 +70,17 @@ def run_inference(model, registry, device, vision_data, fixture):
         policy_logits, value, stake = model(features, l_idx, h_idx, a_idx)
         action_probs = torch.softmax(policy_logits, dim=-1).squeeze()
 
-    rl_ev = value.item()  # Value head EV — used to derive calibrated true win probability
-
     actions = []
     for i, act in enumerate(ACTIONS):
         key = act["key"]
-        prob = action_probs[i].item()   # Raw softmax action preference (~1/30 ≈ 3.3%)
+        prob = action_probs[i].item()
         odds = SYNTHETIC_ODDS.get(key, 0.0)
-
-        # ── Calibrated true win probability ──────────────────────────────────
-        # The raw softmax `prob` is the model's relative *preference* for this
-        # market across the 30-dim action space. It is NOT the win probability
-        # for the outcome. Using it directly in the gate produces EV ≈ -0.90
-        # for every action (0.037 × 2.56 - 1 = -0.905), causing all selections
-        # to be rejected regardless of how confident the model actually is.
-        #
-        # The value head already estimates expected value for the top action.
-        # We back-calculate the implied true win probability per action as:
-        #   true_prob = (rl_ev + 1.0) / odds
-        #
-        # This is the same EV formula inverted: EV = p × odds - 1 → p = (EV+1)/odds.
-        # We use it for both the Stairway Gate check and the displayed EV column.
-        # The raw softmax `prob` is preserved for ranking and action preference display.
-        if odds > 0.0 and key != "no_bet":
-            true_prob = (rl_ev + 1.0) / odds
-            true_prob = max(0.0, min(1.0, true_prob))  # clamp to [0, 1]
-        else:
-            true_prob = prob  # fallback for no_bet or missing odds
-
-        bettable, reason = stairway_gate(key, None, true_prob)
-        ev = (true_prob * odds) - 1.0 if odds > 0 else None
-
+        bettable, reason = stairway_gate(key, None, prob)
+        ev = (prob * odds) - 1.0 if odds > 0 else None
         actions.append({
             "idx": i, "key": key, "market": act["market"],
             "outcome": act["outcome"], "line": act["line"],
-            "prob": prob,           # raw softmax — action preference, used for ranking
-            "true_prob": true_prob, # calibrated win probability — used for gate/EV
-            "odds": odds, "ev": ev,
+            "prob": prob, "odds": odds, "ev": ev,
             "bettable": bettable, "reason": reason,
             "base_lk": act["likelihood"],
         })
@@ -114,7 +88,7 @@ def run_inference(model, registry, device, vision_data, fixture):
 
     return {
         "actions": actions, "top": actions[0],
-        "value": rl_ev, "kelly": stake.item() * 5.0,
+        "value": value.item(), "kelly": stake.item() * 5.0,
         "l_idx": l_idx, "h_idx": h_idx, "a_idx": a_idx,
     }
 
@@ -184,27 +158,25 @@ def display(fixture, vision_data, result):
     top = result["top"]
     print("\n── MODEL HEAD OUTPUTS ────────────────────────────────────")
     print(f"  🎯 Top Action:  {top['key']}  ({top['market']} → {top['outcome']}{' '+top['line'] if top['line'] else ''})")
-    print(f"  📊 Action Prob: {top['prob']:.4f}  ({top['prob']*100:.1f}%)  [model preference across 30 actions]")
-    print(f"  🎯 True Win P:  {top['true_prob']:.4f}  ({top['true_prob']*100:.1f}%)  [calibrated from value head]")
+    print(f"  📊 Probability: {top['prob']:.4f}  ({top['prob']*100:.1f}%)")
     print(f"  💰 Expected EV: {result['value']:+.4f}")
     print(f"  📐 Kelly:       {result['kelly']:.2f}%")
     gate = "✅ PASS" if top["bettable"] else "❌ FAIL"
     print(f"  🚪 Gate:        {gate} — {top['reason']}")
 
     # ── All 30 Actions ──
-    print("\n── ALL 30 ACTIONS (ranked by action preference) ─────────")
-    print(f"  {'#':>3s}  {'Action':<22s} {'Market → Outcome':<32s} {'ActProb':>7s} {'TrueP':>7s} {'Odds':>6s} {'EV':>8s} {'Gate':>4s}  Reason")
+    print("\n── ALL 30 ACTIONS (ranked by probability) ────────────────")
+    print(f"  {'#':>3s}  {'Action':<22s} {'Market → Outcome':<32s} {'Prob':>7s} {'Odds':>6s} {'EV':>8s} {'Gate':>4s}  Reason")
     hr("─")
 
     for rank, a in enumerate(result["actions"], 1):
         prob_s = f"{a['prob']*100:.1f}%"
-        truep_s = f"{a['true_prob']*100:.1f}%"
         odds_s = f"{a['odds']:.2f}" if a["odds"] > 0 else "  —"
         ev_s = f"{a['ev']:+.3f}" if a["ev"] is not None else "   —"
         gate_s = " ✅" if a["bettable"] else " ❌"
         mo = f"{a['market']} → {a['outcome']}{' '+a['line'] if a['line'] else ''}"
         marker = " ◄" if rank == 1 else ""
-        print(f"  {rank:3d}  {a['key']:<22s} {mo:<32s} {prob_s:>7s} {truep_s:>7s} {odds_s:>6s} {ev_s:>8s} {gate_s}  {a['reason']}{marker}")
+        print(f"  {rank:3d}  {a['key']:<22s} {mo:<32s} {prob_s:>7s} {odds_s:>6s} {ev_s:>8s} {gate_s}  {a['reason']}{marker}")
 
     # ── Bettable Summary ──
     bettable = [a for a in result["actions"] if a["bettable"]]
@@ -212,7 +184,7 @@ def display(fixture, vision_data, result):
     if bettable:
         print(f"  ✅ {len(bettable)} action(s) pass Stairway Gate (1.20–4.00 odds + EV≥0):")
         for a in bettable:
-            print(f"     {a['key']:22s}  true_p={a['true_prob']:.3f}  odds={a['odds']:.2f}  EV={a['ev']:+.3f}")
+            print(f"     {a['key']:22s}  prob={a['prob']:.3f}  odds={a['odds']:.2f}  EV={a['ev']:+.3f}")
     else:
         print("  ❌ No actions pass the Stairway Gate for this match.")
     print()
