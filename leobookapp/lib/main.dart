@@ -5,6 +5,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:leobookapp/core/theme/app_theme_v2.dart';
+import 'package:leobookapp/core/theme/theme_cubit.dart';
 import 'package:leobookapp/logic/cubit/home_cubit.dart';
 import 'package:leobookapp/data/repositories/data_repository.dart';
 import 'package:leobookapp/data/repositories/news_repository.dart';
@@ -49,35 +50,38 @@ class LeoBookApp extends StatelessWidget {
             )..loadDashboard(),
           ),
           BlocProvider<UserCubit>(create: (context) => UserCubit()),
+          BlocProvider<ThemeCubit>(create: (_) => ThemeCubit()),
         ],
-        child: MaterialApp(
-          title: 'LeoBook',
-          theme: AppThemeV2.lightTheme,
-          darkTheme: AppThemeV2.darkTheme,
-          themeMode: ThemeMode.dark,
-          home: const MainScreen(),
-          debugShowCheckedModeBanner: false,
-          builder: (context, child) {
-            const double scale = 1;
-            final mq = MediaQuery.of(context);
-            return Transform.scale(
-              scale: scale,
-              alignment: Alignment.topLeft,
-              child: SizedBox(
-                width: mq.size.width / scale,
-                height: mq.size.height / scale,
-                child: MediaQuery(
-                  data: mq.copyWith(
-                    size: Size(
-                      mq.size.width / scale,
-                      mq.size.height / scale,
+        child: BlocBuilder<ThemeCubit, ThemeMode>(
+          builder: (context, themeMode) => MaterialApp(
+            title: 'LeoBook',
+            theme: AppThemeV2.lightTheme,
+            darkTheme: AppThemeV2.darkTheme,
+            themeMode: themeMode,
+            home: const MainScreen(),
+            debugShowCheckedModeBanner: false,
+            builder: (context, child) {
+              const double scale = 1;
+              final mq = MediaQuery.of(context);
+              return Transform.scale(
+                scale: scale,
+                alignment: Alignment.topLeft,
+                child: SizedBox(
+                  width: mq.size.width / scale,
+                  height: mq.size.height / scale,
+                  child: MediaQuery(
+                    data: mq.copyWith(
+                      size: Size(
+                        mq.size.width / scale,
+                        mq.size.height / scale,
+                      ),
                     ),
+                    child: child!,
                   ),
-                  child: child!,
                 ),
-              ),
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );

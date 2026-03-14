@@ -6,25 +6,11 @@
 
 """
 Usage:
-  python Leo.py --diagnose-rl                                           # Latest 5 upcoming fixtures
-  python Leo.py --diagnose-rl --fixture FIXTURE_ID                      # Specific fixture
-  python Leo.py --diagnose-rl --top 10                                  # Top 10 upcoming fixtures
-  python Leo.py --diagnose-rl --checkpoint path.pth                     # Use a specific checkpoint
-  python Leo.py --diagnose-rl --all-played --top 3                      # Last 3 COMPLETED matches
-  python Leo.py --diagnose-rl --checkpoint Data/Store/models/checkpoints/phase1_day038.pth
-
-Bug fixes applied (2026-03-14):
-  FIX-A: --all-played returned upcoming (unplayed) fixtures because the query
-          filtered on home_score IS NOT NULL but did not also require match_status
-          to indicate the match was actually finished. Added explicit match_status
-          filter: finished OR (score present AND date < today). Also added
-          AND date <= today_str to exclude future matches that happen to have
-          scores pre-populated in the DB.
-  FIX-B: time=None printed literally as "None" in the fixture header. Now
-          replaced with an empty string when time is absent.
-  FIX-C: --diagnose-rl without --all-played called get_weekly_fixtures() which
-          returns upcoming matches; some of those had no time set (pre-season
-          enrichment rows). Added a guard to skip fixtures with no date.
+  python Leo.py --diagnose-rl                                # Latest 5 upcoming fixtures
+  python Leo.py --diagnose-rl --fixture FIXTURE_ID           # Specific fixture
+  python Leo.py --diagnose-rl --top 10                       # Top 10 fixtures
+  python Leo.py --diagnose-rl --checkpoint path.pth          # Use a specific checkpoint
+  python Leo.py --diagnose-rl --all-played --top 3           # Recent completed matches
 """
 
 import sys
@@ -57,19 +43,39 @@ def load_model(checkpoint_path=None):
     device = torch.device("cpu")
     registry = AdapterRegistry()
     default_path = os.path.join(PROJECT_ROOT, "Data", "Store", "models", "leobook_base.pth")
+
+    # If no explicit checkpoint and leobook_base.pth doesn't exist, auto-find
+    # the latest training checkpoint (written after each day during --train-rl).
+    if not checkpoint_path and not os.path.exists(default_path):
+        checkpoint_dir = os.path.join(PROJECT_ROOT, "Data", "Store", "models", "checkpoints")
+        candidates = []
+        if os.path.isdir(checkpoint_dir):
+            candidates = sorted(
+                [f for f in os.listdir(checkpoint_dir) if f.endswith(".pth")],
+                reverse=True
+            )
+        if candidates:
+            default_path = os.path.join(checkpoint_dir, candidates[0])
+            print(f"  ℹ leobook_base.pth not found — using latest checkpoint: {candidates[0]}")
+        else:
+            print(f"  ✗ No model checkpoint found.")
+            print(f"    Run: python Leo.py --train-rl")
+            print(f"    Then retry: python Leo.py --diagnose-rl --all-played --top 3")
+            sys.exit(1)
+
     path = checkpoint_path or default_path
 
     if not os.path.exists(path):
         print(f"  ✗ Checkpoint not found: {path}")
+        print(f"    Run: python Leo.py --train-rl  to create a model first.")
         sys.exit(1)
 
     model = LeoBookRLModel().to(device)
-
     # Support both bare state_dict saves and full checkpoint dicts
     raw = torch.load(path, map_location=device, weights_only=False)
     if isinstance(raw, dict) and "model_state" in raw:
         state_dict = raw["model_state"]
-        print(f"  ✓ Loaded full checkpoint: {os.path.basename(path)}")
+        print(f"  ✓ Loaded checkpoint: {os.path.basename(path)}")
         if "phase" in raw:
             print(f"    Phase: {raw['phase']}  |  Day: {raw.get('day','?')}/{raw.get('total_days','?')}")
         if "total_matches" in raw:
@@ -97,21 +103,33 @@ def run_inference(model, registry, device, vision_data, fixture):
         policy_logits, value, stake = model(features, l_idx, h_idx, a_idx)
         action_probs = torch.softmax(policy_logits, dim=-1).squeeze()
 
-    rl_ev = value.item()
+    rl_ev = value.item()  # Value head EV — used to derive calibrated true win probability
 
     actions = []
     for i, act in enumerate(ACTIONS):
         key = act["key"]
-        prob = action_probs[i].item()
+        prob = action_probs[i].item()   # Raw softmax action preference (~1/30 ≈ 3.3%)
         odds = SYNTHETIC_ODDS.get(key, 0.0)
 
-        # Calibrated true win probability via value head EV back-calculation.
-        # EV = p × odds - 1  →  p = (EV + 1) / odds
+        # ── Calibrated true win probability ──────────────────────────────────
+        # The raw softmax `prob` is the model's relative *preference* for this
+        # market across the 30-dim action space. It is NOT the win probability
+        # for the outcome. Using it directly in the gate produces EV ≈ -0.90
+        # for every action (0.037 × 2.56 - 1 = -0.905), causing all selections
+        # to be rejected regardless of how confident the model actually is.
+        #
+        # The value head already estimates expected value for the top action.
+        # We back-calculate the implied true win probability per action as:
+        #   true_prob = (rl_ev + 1.0) / odds
+        #
+        # This is the same EV formula inverted: EV = p × odds - 1 → p = (EV+1)/odds.
+        # We use it for both the Stairway Gate check and the displayed EV column.
+        # The raw softmax `prob` is preserved for ranking and action preference display.
         if odds > 0.0 and key != "no_bet":
             true_prob = (rl_ev + 1.0) / odds
-            true_prob = max(0.0, min(1.0, true_prob))
+            true_prob = max(0.0, min(1.0, true_prob))  # clamp to [0, 1]
         else:
-            true_prob = prob
+            true_prob = prob  # fallback for no_bet or missing odds
 
         bettable, reason = stairway_gate(key, None, true_prob)
         ev = (true_prob * odds) - 1.0 if odds > 0 else None
@@ -119,8 +137,8 @@ def run_inference(model, registry, device, vision_data, fixture):
         actions.append({
             "idx": i, "key": key, "market": act["market"],
             "outcome": act["outcome"], "line": act["line"],
-            "prob": prob,
-            "true_prob": true_prob,
+            "prob": prob,           # raw softmax — action preference, used for ranking
+            "true_prob": true_prob, # calibrated win probability — used for gate/EV
             "odds": odds, "ev": ev,
             "bettable": bettable, "reason": reason,
             "base_lk": act["likelihood"],
@@ -171,13 +189,10 @@ def display(fixture, vision_data, result):
     as_ = fixture.get("away_score")
     score_str = f"  Final: {hs}-{as_}" if hs is not None and as_ is not None else ""
 
-    # FIX-B: replace None time with empty string
-    match_time = fixture.get("time") or ""
-
     print()
     hr("═")
     print(f"  ⚽  {home}  vs  {away}{score_str}")
-    print(f"  📅 {fixture.get('date','?')} {match_time}  |  🏆 {league}")
+    print(f"  📅 {fixture.get('date','?')} {fixture.get('time','?')}  |  🏆 {league}")
     print(f"  🔑 fixture: {fixture.get('fixture_id','?')}")
     print(f"  🧠 Adapters: league={result['l_idx']}  home={result['h_idx']}  away={result['a_idx']}")
     hr("═")
@@ -243,9 +258,9 @@ def main(args=None):
         parser.add_argument("--fixture", type=str, help="Specific fixture_id")
         parser.add_argument("--top", type=int, default=5, help="Number of fixtures (default: 5)")
         parser.add_argument("--checkpoint", type=str, help="Path to .pth checkpoint")
-        parser.add_argument("--all-played", action="store_true", dest="all_played",
-                            help="Inspect recent completed matches")
+        parser.add_argument("--all-played", action="store_true", help="Inspect recent played matches")
         args, _ = parser.parse_known_args()
+
 
     hr("═")
     print("  🧠 LeoBook RL Decision Inspector")
@@ -253,13 +268,10 @@ def main(args=None):
     hr("═")
     print()
 
-    model, registry, device = load_model(getattr(args, "checkpoint", None))
+    model, registry, device = load_model(args.checkpoint)
     conn = init_db()
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
-
-    if getattr(args, "fixture", None):
-        # ── Single fixture deep-dive ──────────────────────────────────────────
+    if args.fixture:
         row = conn.execute(
             """SELECT h.name AS home_team_name, a.name AS away_team_name, s.*
                FROM schedules s
@@ -272,19 +284,8 @@ def main(args=None):
             print(f"  ✗ Fixture not found: {args.fixture}")
             sys.exit(1)
         fixtures = [dict(row)]
-
-    elif getattr(args, "all_played", False):
-        # ── FIX-A: Recent COMPLETED matches ─────────────────────────────────
-        # Original query: WHERE home_score IS NOT NULL — this also matched
-        # upcoming matches that had scores pre-populated (enrichment artefacts)
-        # or rows without a match_status.
-        #
-        # Fixed query adds:
-        #   1. AND date <= today_str  — exclude any future-dated rows
-        #   2. AND (match_status = 'finished' OR match_status IS NULL)
-        #      — prefer finished, fall back to NULL-status rows that have scores
-        #      (legacy enriched rows where status was not captured)
-        #   3. ORDER BY date DESC, time DESC  — most recent first
+    elif args.all_played:
+        today_str = datetime.now().strftime("%Y-%m-%d")
         rows = conn.execute(
             """SELECT h.name AS home_team_name, a.name AS away_team_name, s.*
                FROM schedules s
@@ -296,27 +297,18 @@ def main(args=None):
                  AND (s.match_status = 'finished' OR s.match_status IS NULL)
                ORDER BY s.date DESC, s.time DESC
                LIMIT ?""",
-            (today_str, getattr(args, "top", 5)),
+            (today_str, args.top,),
         ).fetchall()
         fixtures = [dict(r) for r in rows]
         if not fixtures:
-            print("  No completed matches found. Check your DB has finished fixtures "
-                  "with home_score/away_score populated and date <= today.")
+            print("  No completed matches found.")
+            print("  Check that DB has finished fixtures with home_score/away_score populated.")
             sys.exit(0)
-
     else:
-        # ── Upcoming fixtures ────────────────────────────────────────────────
-        # FIX-C: filter out fixtures with no date (pre-season enrichment rows)
-        raw_fixtures = get_weekly_fixtures(conn)
-        fixtures = [
-            f for f in raw_fixtures
-            if f.get("date") and f["date"] >= today_str
-        ][:getattr(args, "top", 5)]
+        fixtures = get_weekly_fixtures(conn)[:args.top]
 
     if not fixtures:
-        print("  No fixtures found.")
-        print("  • For upcoming matches: ensure enrichment has run for this week.")
-        print("  • For played matches:   use --all-played flag.")
+        print("  No fixtures found. Try --all-played to inspect completed matches.")
         sys.exit(0)
 
     print(f"\n  Diagnosing {len(fixtures)} fixture(s)...\n")
@@ -328,16 +320,12 @@ def main(args=None):
             hf = len([m for m in h2h_data.get("home_last_10_matches", []) if m])
             af = len([m for m in h2h_data.get("away_last_10_matches", []) if m])
             if hf < 1 and af < 1:
-                home_name = fixture.get("home_team_name") or fixture.get("home_team", "?")
-                away_name = fixture.get("away_team_name") or fixture.get("away_team", "?")
-                print(f"  ⚠ Skipping {home_name} vs {away_name} — no form data available")
+                print(f"  ⚠ Skipping {fixture.get('home_team_name','?')} vs {fixture.get('away_team_name','?')} — no form data")
                 continue
             result = run_inference(model, registry, device, vision_data, fixture)
             display(fixture, vision_data, result)
         except Exception as e:
-            home_name = fixture.get("home_team_name") or fixture.get("home_team", "?")
-            away_name = fixture.get("away_team_name") or fixture.get("away_team", "?")
-            print(f"  ✗ Error: {home_name} vs {away_name}: {e}")
+            print(f"  ✗ Error: {fixture.get('home_team_name','?')} vs {fixture.get('away_team_name','?')}: {e}")
             import traceback
             traceback.print_exc()
 

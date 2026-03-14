@@ -14,6 +14,8 @@ import '../../screens/team_screen.dart';
 import '../../screens/league_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:leobookapp/core/widgets/glass_container.dart';
+import 'badges/leo_badge.dart';
+import 'package:leobookapp/core/animations/leo_animations.dart';
 
 class MatchCard extends StatefulWidget {
   final MatchModel match;
@@ -59,7 +61,11 @@ class _MatchCardState extends State<MatchCard> {
     // Remove "WORLD" hardcoded region labels
     if (region.toUpperCase() == "WORLD") region = "";
 
-    return MouseRegion(
+    return LeoFadeIn(
+      child: Semantics(
+        label: '${match.homeTeam} vs ${match.awayTeam}, ${match.status}',
+        button: true,
+        child: MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
       onExit: (_) => setState(() => _isHovered = false),
       child: AnimatedScale(
@@ -316,9 +322,17 @@ class _MatchCardState extends State<MatchCard> {
                 Positioned(
                   top: 0,
                   right: 0,
-                  child: _LiveBadge(
-                    minute: match.isLive ? match.liveMinute : null,
-                    isSoon: match.isStartingSoon && !match.isLive,
+                  child: LeoBadge(
+                    label: match.isStartingSoon && !match.isLive
+                        ? 'SOON'
+                        : (match.liveMinute != null &&
+                                match.liveMinute!.isNotEmpty
+                            ? "LIVE ${match.liveMinute}'"
+                            : 'LIVE'),
+                    variant: match.isStartingSoon && !match.isLive
+                        ? LeoBadgeVariant.scheduled
+                        : LeoBadgeVariant.live,
+                    size: LeoBadgeSize.small,
                   ),
                 ),
               if (isFinished && match.isPredictionAccurate)
@@ -704,88 +718,4 @@ class _MatchCardState extends State<MatchCard> {
   }
 }
 
-class _LiveBadge extends StatefulWidget {
-  final String? minute;
-  final bool isSoon;
-  const _LiveBadge({this.minute, this.isSoon = false});
-
-  @override
-  State<_LiveBadge> createState() => _LiveBadgeState();
-}
-
-class _LiveBadgeState extends State<_LiveBadge>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _fadeAnimation;
-  late Animation<double> _scaleAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
-
-    _fadeAnimation = Tween<double>(begin: 0.4, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-
-    _scaleAnimation = Tween<double>(begin: 0.96, end: 1.02).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    String label = "LIVE";
-    if (widget.isSoon) {
-      label = "SOON";
-    } else if (widget.minute != null && widget.minute!.isNotEmpty) {
-      label = "LIVE ${widget.minute}'";
-    }
-
-    return ScaleTransition(
-      scale: _scaleAnimation,
-      child: FadeTransition(
-        opacity: _fadeAnimation,
-        child: Container(
-          padding: EdgeInsets.symmetric(
-            horizontal: Responsive.sp(context, 6),
-            vertical: Responsive.sp(context, 2),
-          ),
-          decoration: BoxDecoration(
-            color: widget.isSoon ? AppColors.primary : AppColors.liveRed,
-            borderRadius: BorderRadius.only(
-              topRight: Radius.circular(Responsive.sp(context, 10)),
-              bottomLeft: Radius.circular(Responsive.sp(context, 6)),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: (widget.isSoon ? AppColors.primary : AppColors.liveRed)
-                    .withValues(alpha: 0.3),
-                blurRadius: 4,
-                spreadRadius: 0,
-              ),
-            ],
-          ),
-          child: Text(
-            label.toUpperCase(),
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: Responsive.sp(context, 6),
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.5,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
+// _LiveBadge removed — replaced by LeoBadge(variant: LeoBadgeVariant.live / scheduled)
