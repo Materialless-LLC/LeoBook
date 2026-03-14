@@ -31,6 +31,7 @@ import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F   # ADDED for proper KL imitation loss
 from typing import Dict, Any, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -104,6 +105,7 @@ class RLTrainer:
         )
 
         self._step_count = 0
+        self.kl_weight = 0.1  # ADDED: starts at 0.1, anneals to 0 in Phase 2+ so RL can outperform expert
 
     # -------------------------------------------------------------------
     # Season Discovery & Date Selection
@@ -430,19 +432,23 @@ class RLTrainer:
             # --- Phase 1: Imitation Learning ---
             if expert_probs.dim() == 1:
                 expert_probs = expert_probs.unsqueeze(0)
-            loss = nn.functional.cross_entropy(policy_logits, expert_probs)
+            # FIXED: Proper KL divergence for soft expert probabilities 
+            # (was broken cross_entropy — root cause of 650+ days with no learning)
+            policy_log_probs = F.log_softmax(policy_logits, dim=-1)
+            imitation_loss = F.kl_div(policy_log_probs, expert_probs, reduction='batchmean')
 
             # KL divergence as monitoring metric + regulariser
             kl_div = torch.sum(
                 expert_probs * (torch.log(expert_probs + 1e-10) - torch.log(action_probs + 1e-10))
             )
-            total_loss = loss + 0.1 * kl_div
+            total_loss = imitation_loss + self.kl_weight * kl_div
 
             rl_action = torch.argmax(action_probs, dim=-1).item()
-            metrics["imitation_loss"] = loss.item()
+            metrics["imitation_loss"] = imitation_loss.item()
             metrics["kl_div"] = kl_div.item()
             metrics["action"] = rl_action
             metrics["rule_engine_acc"] = 1.0 if rl_action == torch.argmax(expert_probs).item() else 0.0
+            metrics["max_prob"] = action_probs.max().item()  # ADDED for convergence visibility
 
         # --- B. RL / PPO (Phase 2 & 3) ---
         elif outcome is not None:
@@ -472,7 +478,7 @@ class RLTrainer:
 
             if use_kl and expert_probs is not None:
                 kl_div = torch.sum(expert_probs * (torch.log(expert_probs + 1e-10) - torch.log(action_probs + 1e-10)))
-                total_loss += 0.1 * kl_div
+                total_loss += self.kl_weight * kl_div   # UPDATED: uses annealing kl_weight
                 metrics["kl_div"] = kl_div.item()
 
             metrics.update({
@@ -480,6 +486,7 @@ class RLTrainer:
                 "value_loss": value_loss.item(),
                 "reward": reward,
                 "action": action.item(),
+                "max_prob": action_probs.max().item(),  # ADDED for convergence visibility
             })
 
         # Backward + optimize
@@ -649,6 +656,7 @@ class RLTrainer:
             day_rl_acc = 0.0
             day_rule_acc = 0.0
             day_grad_norm = 0.0
+            day_max_prob = 0.0   # ADDED for convergence visibility
 
             cursor = conn.execute("""
                 SELECT 
@@ -690,6 +698,7 @@ class RLTrainer:
                 day_reward += metrics.get("reward", 0.0)
                 day_imit_loss += metrics.get("imitation_loss", 0.0)
                 day_kl += metrics.get("kl_div", 0.0)
+                day_max_prob += metrics.get("max_prob", 0.0)  # ADDED
 
                 # Gradient norm tracking
                 total_norm = 0.0
@@ -727,18 +736,26 @@ class RLTrainer:
                 rule_acc = (day_rule_acc / day_matches) * 100
                 kl = day_kl / day_matches
                 gn = day_grad_norm / day_matches
+                max_prob_pct = (day_max_prob / day_matches) * 100   # ADDED
                 if active_phase == 1:
                     il = day_imit_loss / day_matches
                     print(f"  [Day {day_idx+1:3d}/{start_day_idx + len(all_dates)}] "
                           f"Rule Acc: {rule_acc:4.1f}% | RL Acc: {rl_acc:4.1f}% | "
-                          f"KL: {kl:5.3f} | ImitLoss: {il:6.4f} | GradNorm: {gn:.4f} | "
-                          f"Matches: {day_matches}")
+                          f"KL: {kl:5.3f} | ImitLoss: {il:6.4f} | MaxProb: {max_prob_pct:4.1f}% | "
+                          f"GradNorm: {gn:.4f} | Matches: {day_matches}")
                 else:
                     rw = day_reward / day_matches
                     print(f"  [Day {day_idx+1:3d}/{start_day_idx + len(all_dates)}] "
                           f"Rule Acc: {rule_acc:4.1f}% | RL Acc: {rl_acc:4.1f}% | "
-                          f"KL: {kl:5.3f} | Reward: {rw:6.3f} | GradNorm: {gn:.4f} | "
-                          f"Matches: {day_matches}")
+                          f"KL: {kl:5.3f} | Reward: {rw:6.3f} | MaxProb: {max_prob_pct:4.1f}% | "
+                          f"GradNorm: {gn:.4f} | Matches: {day_matches}")
+
+                # --- KL annealing for true outperformance (Phase 2+) ---
+                if active_phase >= 2:
+                    self.kl_weight = max(0.0, self.kl_weight * 0.995)
+                    if self.kl_weight < 0.01:
+                        self.kl_weight = 0.0
+                    print(f"      [KL annealing] current weight = {self.kl_weight:.4f}")
 
                 # --- Save checkpoint after each day ---
                 total_matches_global += day_matches
