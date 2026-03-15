@@ -51,3 +51,169 @@ unzip ../leobook-export.zip "leobook-export/leobook.db" "leobook-export/crests/*
 # 3. Cleanup (remove zip and empty wrapper folder)
 rm ../leobook-export.zip
 rm -r ../leobook-export 2>/dev/null || true
+
+
+# ============================================================
+# STREAMER — HOW TO KILL (Ctrl+C does NOT work)
+# start_new_session=True severs it from your terminal's process group
+# ============================================================
+
+## Linux / macOS / GitHub Codespaces (use this in terminal):
+pkill -f fs_live_streamer
+
+# If you need the PID first:
+pgrep -fa fs_live_streamer          # shows PID + full command
+kill -9 <PID>
+
+# Convenience script — save as stop_streamer.sh:
+#!/usr/bin/env bash
+pkill -f fs_live_streamer && echo "Streamer stopped." || echo "Streamer not running."
+
+## Windows (PowerShell):
+Get-WmiObject Win32_Process | Where-Object {$_.CommandLine -like "*fs_live_streamer*"} | ForEach-Object { taskkill /F /PID $_.ProcessId }
+
+# Codespaces note: pkill does a full process-table scan by command name,
+# so it finds the streamer even across detached process groups.
+
+
+# ============================================================
+# FIX PROMPTS — Session leo_session_102746
+# Run in order. Each is independently committable.
+# ============================================================
+
+
+# -------- FIX 1 — Predictions Supabase Timeout (CRITICAL) ---------
+# Root cause: _BATCH_SIZES['default'] = 2000 applies to predictions.
+# 1,969 rows pushed as one upsert → Supabase statement_timeout (code 57014).
+# Zero predictions reach Supabase.
+#
+# File: Data/Access/sync_schema.py — _BATCH_SIZES dict (line ~214)
+#
+# BEFORE:
+_BATCH_SIZES: Dict[str, int] = {
+    'schedules':  500,
+    'match_odds': 1000,
+    'default':    2000,
+}
+# AFTER:
+_BATCH_SIZES: Dict[str, int] = {
+    'schedules':   500,
+    'match_odds':  1000,
+    'predictions': 200,   # ← ADD — prevents 57014 timeout for 1969-row upsert
+    'default':     2000,
+}
+#
+# Verification:
+python -c "from Data.Access.sync_schema import _BATCH_SIZES; assert _BATCH_SIZES['predictions'] == 200; print('OK')"
+#
+# Commit: fix: predictions upsert batch size 200 (was 2000 → 57014 timeout)
+
+
+# -------- FIX 2 — paper_trades Schema Mismatch (CRITICAL) ----------
+# Root cause: SUPABASE_SCHEMA['paper_trades'] has league_id INTEGER (line 164).
+# Flashscore league IDs are TEXT strings → Supabase rejects with code 22P02.
+# ALL 1,969 paper trades fail to sync.
+#
+# File: Data/Access/sync_schema.py — SUPABASE_SCHEMA['paper_trades'] DDL
+#
+# BEFORE (line 164):
+            league_id INTEGER,
+# AFTER:
+            league_id TEXT,
+#
+# If Supabase table already exists — run this in Supabase SQL editor:
+ALTER TABLE public.paper_trades ALTER COLUMN league_id TYPE TEXT;
+#
+# Verification:
+python -c "
+import re
+from Data.Access.sync_schema import SUPABASE_SCHEMA
+cols = dict(re.findall(r'\b([a-z_]+)\s+(TEXT|INTEGER|REAL)', SUPABASE_SCHEMA['paper_trades'], re.I))
+assert cols['league_id'] == 'TEXT', f'league_id is {cols[\"league_id\"]}'
+print('OK')
+"
+#
+# Commit: fix: paper_trades.league_id INTEGER → TEXT (code 22P02, all trades fail)
+
+
+# -------- FIX 3 — Hydration Timeout: Adaptive (IMPORTANT) ----------
+# Root cause: hydration wait is capped at ~8.5s for all leagues.
+# 19/25 leagues in Batch 1 hit the cap early → 145 fixtures silently skipped.
+# Yield: 44.2% (should be ≥75%).
+#
+# File: Modules/FootballCom/extractor.py
+#
+# 1. Replace the fixed hydration timeout constant with this helper:
+def _hydration_timeout(expected_count: int) -> float:
+    """Adaptive timeout: 6s (≤6 fixtures), 10s (7-12), 16s (13+)."""
+    if expected_count <= 6:   return 6.0
+    elif expected_count <= 12: return 10.0
+    else:                      return 16.0
+#
+# 2. Add extra scroll pass if yield < 60% before giving up.
+#
+# 3. Replace 48 lines of scroll/wait noise per session with one summary per league:
+#   REMOVE: print("Scrolling to trigger match hydration...")
+#   REMOVE: print(f"Waiting {wait}s for card renderer...")
+#   ADD:    print(f"  [Extractor] {league_name}: {scroll_passes} scrolls, {total_wait:.1f}s → {cards_loaded}/{expected_count} cards")
+#
+# Commit: fix: adaptive hydration timeout (6/10/16s by size) + suppress scroll/wait noise
+
+
+# -------- FIX 4 — Batch Resume Checkpoint (IMPORTANT) -------------
+# Root cause: run_odds_harvesting() always starts from Batch 1 on restart.
+# Manual/crash shutdown mid-session wastes all prior work + skips later batches.
+#
+# File: Modules/FootballCom/fb_manager.py
+#
+# 1. Add checkpoint helpers after imports (top of fb_manager.py):
+import json
+from pathlib import Path
+
+_CHECKPOINT_PATH = Path("Data/Logs/batch_checkpoint.json")
+
+def _load_checkpoint() -> int:
+    """Return last completed batch index for today (0 = start fresh)."""
+    if _CHECKPOINT_PATH.exists():
+        try:
+            c = json.loads(_CHECKPOINT_PATH.read_text())
+            if c.get("date") == now_ng().strftime("%Y-%m-%d"):
+                return int(c.get("last_batch", 0))
+        except Exception:
+            pass
+    return 0
+
+def _save_checkpoint(batch_idx: int) -> None:
+    """Persist last completed batch index for today."""
+    _CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CHECKPOINT_PATH.write_text(json.dumps({
+        "date": now_ng().strftime("%Y-%m-%d"),
+        "last_batch": batch_idx,
+    }))
+#
+# 2. In run_odds_harvesting(), after batches = [...] is computed:
+resume_from = _load_checkpoint()
+if resume_from > 0:
+    print(f"  [Resume] Checkpoint found — skipping batches 1–{resume_from}, starting at {resume_from + 1}/{len(batches)}")
+
+for batch_idx, batch_ids in enumerate(batches):
+    if batch_idx < resume_from:
+        continue                    # already done today
+    # ... existing batch logic unchanged ...
+
+    _save_checkpoint(batch_idx + 1) # write after each successful batch
+
+# At natural end of full session, clear the checkpoint:
+_CHECKPOINT_PATH.unlink(missing_ok=True)
+#
+# Verification:
+python -c "
+import sys; sys.path.insert(0, '.')
+from Modules.FootballCom.fb_manager import _load_checkpoint, _save_checkpoint
+_save_checkpoint(3)
+assert _load_checkpoint() == 3
+import os; os.remove('Data/Logs/batch_checkpoint.json')
+print('OK')
+"
+#
+# Commit: feat: batch resume checkpoint — restart picks up from last completed batch
