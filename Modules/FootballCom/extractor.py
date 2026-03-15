@@ -75,15 +75,10 @@ async def _activate_and_wait_for_matches(
     # FIX: when expected_count is 0 (unknown), use a minimal 1.0s base wait
     #      instead of the full formula, to avoid 231× 1.0s sleeps for empty leagues.
     _pre_scroll_wait = min(1.0 + (expected_count * 0.25), 5.0) if expected_count > 0 else 1.0
-    print(
-        f"    [Extractor] Waiting {_pre_scroll_wait:.1f}s for "
-        f"card renderer ({expected_count} expected fixture(s))..."
-    )
     await asyncio.sleep(_pre_scroll_wait)
 
     # Phase 2: Incremental scroll to trigger match card hydration
     try:
-        print("    [Extractor] Scrolling to trigger match hydration...")
         scroll_positions = [400, 800, 1500]
         for pos in scroll_positions:
             await page.evaluate(f"window.scrollTo(0, {pos})")
@@ -145,6 +140,34 @@ async def _activate_and_wait_for_matches(
                 _elapsed += POLL_INTERVAL
 
             if expected_count > 0 and _found < expected_count:
+                # Recovery scroll: one extra deep pass if yield < 60%
+                if _found < expected_count * 0.6:
+                    try:
+                        for pos in [2000, 3500, 0]:
+                            await page.evaluate(f"window.scrollTo(0, {pos})")
+                            await asyncio.sleep(0.8)
+                        # Re-poll for up to 4 more seconds
+                        _extra_elapsed = 0.0
+                        while _extra_elapsed < 4.0:
+                            _found = await page.evaluate("""() => {
+                                const cards = document.querySelectorAll(
+                                    "section.match-card:not(.skeleton), "
+                                    + "div.match-card:not(.skeleton), "
+                                    + "[class*='match-card']:not([class*='skeleton'])"
+                                );
+                                let count = 0;
+                                for (const c of cards) {
+                                    if (c.innerText && c.innerText.trim().length > 20) count++;
+                                }
+                                return count;
+                            }""")
+                            if _found >= expected_count:
+                                break
+                            await asyncio.sleep(0.4)
+                            _extra_elapsed += 0.4
+                    except Exception:
+                        pass
+
                 print(
                     f"    [Extractor] Partial hydration: "
                     f"{_found}/{expected_count} cards after "
@@ -152,13 +175,9 @@ async def _activate_and_wait_for_matches(
                 )
             else:
                 print(
-                    f"    [Extractor] Real match content verified "
-                    f"({_found}/{expected_count if expected_count else '?'} cards)."
+                    f"    [Extractor] {_found}/{expected_count if expected_count else '?'} cards OK "
+                    f"({POLL_TIMEOUT:.1f}s budget)."
                 )
-            
-            # FIX: removed unconditional 2.0s sleep here.
-            # This eliminated ~464s (232 leagues × 2s) of dead time per run.
-            # The poll loop above already confirms cards are hydrated before returning.
             return True
 
         except Exception:
