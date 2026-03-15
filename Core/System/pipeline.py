@@ -148,7 +148,6 @@ async def run_chapter_1_p1(p):
         print("  CHAPTER 1 PAGE 1: URL Resolution & Odds Harvesting")
         print("=" * 60)
 
-        print("    [SearchDict] Runs post-resolution inside fb_manager.py (one batch per league group).")
         await run_odds_harvesting(p)
         log_audit_event("CH1_P1", "URL resolution and odds harvesting completed.", status="success")
         return True
