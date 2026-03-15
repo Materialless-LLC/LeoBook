@@ -29,11 +29,35 @@ __all__ = [
     "ColumnGap",
     "ColumnSpec",
     "REQUIRED_COLUMNS",
+    "INTERNATIONAL_LEAGUE_PREFIXES",
+    "_is_international_league",
     "scan_and_print",
     "get_enrichment_targets",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+# ── International league detection ────────────────────────────────────────────────
+INTERNATIONAL_LEAGUE_PREFIXES: frozenset = frozenset({
+    "1_1", "1_2", "1_3", "1_5", "1_6", "1_7", "1_8",
+})
+
+
+def _is_international_league(league_id: str) -> bool:
+    """Return True if the league is a continental/world tournament.
+
+    International leagues have no meaningful country_code — continent is
+    their correct geographic identifier. country_code gaps on these leagues
+    and their teams are suppressed from gap reporting.
+    """
+    if not league_id:
+        return False
+    parts = league_id.split("_")
+    if len(parts) < 2:
+        return False
+    prefix = f"{parts[0]}_{parts[1]}"
+    return prefix in INTERNATIONAL_LEAGUE_PREFIXES
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -226,6 +250,12 @@ class GapScanner:
                 row_id      = self._row(row, 0)
                 league_id   = self._row(row, 1) or ""
                 current_val = self._row(row, 2)
+
+                # Suppress country_code gaps for international/continental leagues.
+                # continent is their correct geographic identifier, not country_code.
+                if spec.name == "country_code" and _is_international_league(league_id):
+                    continue
+
                 gaps.append(ColumnGap(
                     table="leagues",
                     column=spec.name,
@@ -287,6 +317,15 @@ class GapScanner:
 
                 if not parent_league_ids:
                     parent_league_ids = ["__orphaned__"]
+
+                # Suppress country_code gaps for teams exclusively in international leagues.
+                if spec.name == "country_code":
+                    all_international = all(
+                        _is_international_league(lid) for lid in parent_league_ids
+                        if lid != "__orphaned__"
+                    )
+                    if all_international:
+                        continue
 
                 for league_id in parent_league_ids:
                     gaps.append(ColumnGap(

@@ -406,6 +406,13 @@ if __name__ == "__main__":
             print("\n[Data Quality] Refreshing Season Completeness...")
             from Data.Access.season_completeness import SeasonCompletenessTracker
             SeasonCompletenessTracker.bulk_compute_all()
+
+            print("\n[Data Quality] Filling Country Codes...")
+            from Data.Access.db_helpers import fill_all_country_codes
+            from Data.Access.league_db import get_connection as _get_conn_dq
+            _conn_dq = _get_conn_dq()
+            cc_total = fill_all_country_codes(_conn_dq)
+            print(f"  [CC] {cc_total} country_code rows resolved")
             
             print("\n[Data Quality] Validating IDs (Placeholders/Duplicates)...")
             from Core.System.data_quality import InvalidIDScanner

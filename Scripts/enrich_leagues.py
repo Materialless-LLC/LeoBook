@@ -1437,6 +1437,12 @@ async def main(
                         from Data.Access.db_helpers import propagate_crest_urls
                         propagate_crest_urls()
                         print(f"  [Crests] URL propagation done before {pct}% sync")
+                        # Fill country_codes for national teams and club cross-reference
+                        try:
+                            from Data.Access.db_helpers import fill_all_country_codes
+                            fill_all_country_codes(conn)
+                        except Exception as e:
+                            print(f"  [CC] Country code fill failed: {e}")
                     except Exception as e:
                         print(f"  [Crests] Propagation failed: {e}")
 
@@ -1474,6 +1480,16 @@ async def main(
         from Data.Access.db_helpers import propagate_crest_urls
         propagate_crest_urls()
         print("  [Crests] Final URL propagation done")
+        # Final country_code fill — runs both passes over the complete enriched dataset.
+        try:
+            from Data.Access.db_helpers import fill_all_country_codes
+            total_cc = fill_all_country_codes(conn)
+            if total_cc:
+                print(f"  [CC] Final country_code fill: {total_cc} rows resolved")
+            else:
+                print("  [CC] Country codes already complete")
+        except Exception as e:
+            print(f"  [CC] Final country_code fill failed: {e}")
     except Exception as e:
         print(f"  [Crests] Final propagation failed: {e}")
 

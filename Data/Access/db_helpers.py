@@ -446,6 +446,161 @@ def propagate_crest_urls():
         print(f"    [Crest] Propagated Supabase URLs: {h} home + {a} away")
 
 
+# ─── Country Code Resolution ───
+
+def fill_national_team_country_codes(conn=None) -> int:
+    """Pass 1 — Fill teams.country_code for national teams by matching team
+    names against country.json + override aliases.
+
+    Returns:
+        Number of rows updated.
+    """
+    import json as _json
+    import os as _os
+
+    conn = conn or _get_conn()
+
+    NAME_OVERRIDES: Dict[str, str] = {
+        "ENGLAND":                  "gb-eng",
+        "SCOTLAND":                 "gb-sct",
+        "WALES":                    "gb-wls",
+        "NORTHERN IRELAND":         "gb-nir",
+        "IVORY COAST":              "ci",
+        "DR CONGO":                 "cd",
+        "ESWATINI":                 "sz",
+        "UNITED ARAB EMIRATES":     "ae",
+        "SOUTH KOREA":              "kr",
+        "NORTH MACEDONIA":          "mk",
+        "TRINIDAD AND TOBAGO":      "tt",
+        "TRINIDAD & TOBAGO":        "tt",
+        "BOSNIA AND HERZEGOVINA":   "ba",
+        "BOSNIA":                   "ba",
+        "USA":                      "us",
+        "UNITED STATES":            "us",
+        "CHINESE TAIPEI":           "tw",
+        "HONG KONG":                "hk",
+        "MACAU":                    "mo",
+        "MACAO":                    "mo",
+        "CAPE VERDE":               "cv",
+        "NORTH KOREA":              "kp",
+        "SOUTH SUDAN":              "ss",
+        "PALESTINE":                "ps",
+        "KOSOVO":                   "xk",
+        "CURACAO":                  "cw",
+        "SINT MAARTEN":             "sx",
+        "ANTIGUA AND BARBUDA":      "ag",
+        "SAINT KITTS AND NEVIS":    "kn",
+        "SAINT LUCIA":              "lc",
+        "SAINT VINCENT":            "vc",
+    }
+
+    country_json_path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))),
+        "Data", "Store", "country.json"
+    )
+    name_map: Dict[str, str] = dict(NAME_OVERRIDES)
+    if _os.path.exists(country_json_path):
+        try:
+            with open(country_json_path, encoding="utf-8") as f:
+                for entry in _json.load(f):
+                    key = entry.get("name", "").upper()
+                    if key and key not in name_map:
+                        name_map[key] = entry["code"]
+        except Exception:
+            pass
+
+    if not name_map:
+        return 0
+
+    rows = conn.execute("""
+        SELECT id, name FROM teams
+        WHERE country_code IS NULL OR country_code = ''
+    """).fetchall()
+
+    updated = 0
+    for row in rows:
+        row_id    = row[0] if not hasattr(row, "keys") else row["id"]
+        team_name = row[1] if not hasattr(row, "keys") else row["name"]
+        if not team_name:
+            continue
+
+        clean = team_name.strip()
+        for suffix in (" U17", " U18", " U19", " U20", " U21", " U22", " U23",
+                       " U16", " U15", " U14", " W", " Women", " Females"):
+            if clean.upper().endswith(suffix.upper()):
+                clean = clean[: -len(suffix)].strip()
+                break
+
+        iso = name_map.get(clean.upper())
+        if iso:
+            conn.execute(
+                "UPDATE teams SET country_code = ? WHERE id = ?",
+                (iso, row_id)
+            )
+            updated += 1
+
+    if updated:
+        conn.commit()
+        print(f"    [CC] National team country_codes filled: {updated}")
+
+    return updated
+
+
+def fill_club_team_country_codes(conn=None) -> int:
+    """Pass 2 — Fill teams.country_code for club teams via domestic league
+    cross-reference. Safe to run repeatedly — only fills NULL/empty rows.
+
+    Returns:
+        Number of rows updated.
+    """
+    conn = conn or _get_conn()
+
+    result = conn.execute("""
+        UPDATE teams
+        SET country_code = (
+            SELECT l.country_code
+            FROM schedules s
+            JOIN leagues l ON s.league_id = l.league_id
+            WHERE (s.home_team_id = teams.team_id OR s.away_team_id = teams.team_id)
+              AND l.country_code IS NOT NULL
+              AND l.country_code != ''
+            ORDER BY l.country_code
+            LIMIT 1
+        )
+        WHERE (country_code IS NULL OR country_code = '')
+          AND team_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM schedules s
+              JOIN leagues l ON s.league_id = l.league_id
+              WHERE (s.home_team_id = teams.team_id OR s.away_team_id = teams.team_id)
+                AND l.country_code IS NOT NULL
+                AND l.country_code != ''
+          )
+    """)
+    updated = result.rowcount
+    if updated:
+        conn.commit()
+        print(f"    [CC] Club team country_codes filled via domestic leagues: {updated}")
+
+    return updated
+
+
+def fill_all_country_codes(conn=None) -> int:
+    """Run both country_code fill passes in order.
+
+    Pass 1 — national teams (name lookup via country.json)
+    Pass 2 — club teams (domestic league cross-reference)
+
+    Returns total rows updated across both passes.
+    """
+    conn = conn or _get_conn()
+    total = 0
+    total += fill_national_team_country_codes(conn)
+    total += fill_club_team_country_codes(conn)
+    return total
+
+
 # ─── Football.com Registry ───
 
 def get_site_match_id(date: str, home: str, away: str) -> str:
